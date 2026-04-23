@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from db import get_engine
+from app.utils.db import get_engine
 
 
 if __name__ == "__main__":
