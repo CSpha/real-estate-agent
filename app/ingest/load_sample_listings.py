@@ -42,53 +42,70 @@ def load_sample_csv(file_path: str):
 
     records = df.to_dict(orient="records")
 
-    insert_sql = text(
-        """
-        INSERT INTO listings_current (
-            source,
-            source_listing_id,
-            address,
-            city,
-            state,
-            zip,
-            list_price,
-            beds,
-            baths,
-            sqft,
-            property_type,
-            status,
-            days_on_market,
-            first_seen_date,
-            last_seen_date,
-            price_per_sqft
-        )
-        VALUES (
-            :source,
-            :source_listing_id,
-            :address,
-            :city,
-            :state,
-            :zip,
-            :list_price,
-            :beds,
-            :baths,
-            :sqft,
-            :property_type,
-            :status,
-            :days_on_market,
-            :first_seen_date,
-            :last_seen_date,
-            :price_per_sqft
-        )
-        """
+    upsert_sql = text(
+    """
+    INSERT INTO listings_current (
+        source,
+        source_listing_id,
+        address,
+        city,
+        state,
+        zip,
+        list_price,
+        beds,
+        baths,
+        sqft,
+        property_type,
+        status,
+        days_on_market,
+        first_seen_date,
+        last_seen_date,
+        price_per_sqft
     )
+    VALUES (
+        :source,
+        :source_listing_id,
+        :address,
+        :city,
+        :state,
+        :zip,
+        :list_price,
+        :beds,
+        :baths,
+        :sqft,
+        :property_type,
+        :status,
+        :days_on_market,
+        :first_seen_date,
+        :last_seen_date,
+        :price_per_sqft
+    )
+    ON CONFLICT (source, source_listing_id)
+    DO UPDATE SET
+        address = EXCLUDED.address,
+        city = EXCLUDED.city,
+        state = EXCLUDED.state,
+        zip = EXCLUDED.zip,
+        list_price = EXCLUDED.list_price,
+        beds = EXCLUDED.beds,
+        baths = EXCLUDED.baths,
+        sqft = EXCLUDED.sqft,
+        property_type = EXCLUDED.property_type,
+        status = EXCLUDED.status,
+        days_on_market = EXCLUDED.days_on_market,
+        first_seen_date = LEAST(listings_current.first_seen_date, EXCLUDED.first_seen_date),
+        last_seen_date = GREATEST(listings_current.last_seen_date, EXCLUDED.last_seen_date),
+        price_per_sqft = EXCLUDED.price_per_sqft,
+        updated_at = CURRENT_TIMESTAMP
+    """
+)
 
     engine = get_engine()
 
     with engine.begin() as conn:
-        conn.execute(insert_sql, records)
+        conn.execute(upsert_sql, records)
 
-    print(f"Inserted {len(records)} rows into listings_current.")
+    print(f"Upserted {len(records)} rows into listings_current.")
 
 
 if __name__ == "__main__":

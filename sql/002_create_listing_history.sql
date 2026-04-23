@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS listing_history (
+    id SERIAL PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_listing_id TEXT NOT NULL,
+    address TEXT,
+    city TEXT,
+    state TEXT,
+    zip TEXT,
+    list_price NUMERIC,
+    beds NUMERIC,
+    baths NUMERIC,
+    sqft NUMERIC,
+    property_type TEXT,
+    status TEXT,
+    days_on_market INTEGER,
+    first_seen_date DATE,
+    last_seen_date DATE,
+    price_per_sqft NUMERIC,
+    snapshot_timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

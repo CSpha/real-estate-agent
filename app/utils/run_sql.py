@@ -1,12 +1,20 @@
+import sys
 from pathlib import Path
+
 from sqlalchemy import text
 
 from app.utils.db import get_engine
 
 
 def run_sql_file(file_path: str):
+    sql_path = Path(file_path)
+
+    if not sql_path.exists():
+        raise FileNotFoundError(f"SQL file not found: {file_path}")
+
+    sql = sql_path.read_text()
+
     engine = get_engine()
-    sql = Path(file_path).read_text()
 
     with engine.begin() as conn:
         conn.execute(text(sql))
@@ -15,4 +23,7 @@ def run_sql_file(file_path: str):
 
 
 if __name__ == "__main__":
-    run_sql_file("sql/001_create_listings_current.sql")
+    if len(sys.argv) < 2:
+        raise ValueError("Usage: python -m app.utils.run_sql <sql_file_path>")
+
+    run_sql_file(sys.argv[1])

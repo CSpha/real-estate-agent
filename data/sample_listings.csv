@@ -1,4 +1,4 @@
 source,source_listing_id,address,city,state,zip,list_price,beds,baths,sqft,property_type,status,days_on_market,first_seen_date,last_seen_date,price_per_sqft
 sample_feed,1001,123 Main St,Wooster,OH,44691,78500,3,1,1240,Single Family,Active,12,2026-04-23,2026-04-23,63.31
-sample_feed,1002,456 Oak Ave,Ashland,OH,44805,96900,4,2,1580,Single Family,Active,28,2026-04-23,2026-04-23,61.33
-sample_feed,1003,789 Pine Rd,Mansfield,OH,44903,72500,2,1,980,Single Family,Active,7,2026-04-23,2026-04-23,73.98
+sample_feed,1002,456 Oak Ave,Ashland,OH,44805,90000,4,2,1580,Single Family,Active,35,2026-04-23,2026-04-23,61.33
+sample_feed,1003,789 Pine Rd,Mansfield,OH,44903,72500,2,1,980,Single Family,Pending,7,2026-04-23,2026-04-23,73.98
