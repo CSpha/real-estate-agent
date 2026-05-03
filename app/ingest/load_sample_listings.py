@@ -6,6 +6,53 @@ from sqlalchemy import text
 from app.utils.db import get_engine
 
 
+def insert_raw_records(records):
+    insert_sql = text(
+    """
+    INSERT INTO listings_raw (
+        source,
+        source_listing_id,
+        address,
+        city,
+        state,
+        zip,
+        list_price,
+        beds,
+        baths,
+        sqft,
+        property_type,
+        status,
+        days_on_market,
+        first_seen_date,
+        last_seen_date,
+        price_per_sqft
+    )
+    VALUES (
+        :source,
+        :source_listing_id,
+        :address,
+        :city,
+        :state,
+        :zip,
+        :list_price,
+        :beds,
+        :baths,
+        :sqft,
+        :property_type,
+        :status,
+        :days_on_market,
+        :first_seen_date,
+        :last_seen_date,
+        :price_per_sqft
+    )
+    """)
+
+    engine = get_engine()
+
+    with engine.begin() as conn:
+        conn.execute(insert_sql, records)
+
+
 def load_sample_csv(file_path: str):
     csv_path = Path(file_path)
 
@@ -41,6 +88,8 @@ def load_sample_csv(file_path: str):
     df["last_seen_date"] = pd.to_datetime(df["last_seen_date"]).dt.date
 
     records = df.to_dict(orient="records")
+
+    insert_raw_records(records)
 
     upsert_sql = text(
     """
@@ -105,6 +154,7 @@ def load_sample_csv(file_path: str):
     with engine.begin() as conn:
         conn.execute(upsert_sql, records)
 
+    print(f"Inserted {len(records)} rows into listings_raw.")
     print(f"Upserted {len(records)} rows into listings_current.")
 
 
