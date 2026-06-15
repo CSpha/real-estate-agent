@@ -6,11 +6,21 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
+from app.db import get_connection
 
 from app.utils.db import get_engine
 
 
 app = FastAPI(title="Real Estate Agent API")
+
+@app.get("/")
+def root():
+    return {"message": "Real Estate AgentAPI is running"}
+
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 
 class Listing(BaseModel):
@@ -70,32 +80,22 @@ def row_to_dict(row) -> Dict[str, Any]:
     return {key: serialize_value(value) for key, value in row._mapping.items()}
 
 
-@app.get("/listings", response_model=List[Listing])
-def list_listings(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
-    query = text(
-        """
-        SELECT
-            source,
-            source_listing_id,
-            address,
-            city,
-            state,
-            zip,
-            list_price,
-            beds,
-            baths,
-            sqft,
-            property_type,
-            status,
-            days_on_market,
-            first_seen_date,
-            last_seen_date,
-            price_per_sqft
-        FROM listings_current
-        ORDER BY source, source_listing_id
-        LIMIT :limit OFFSET :offset
-        """
-    )
+@app.get("/listings")
+def get_listings():
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM listings_current
+                ORDER BY listing_id
+                LIMIT 100;
+            """)
+            rows = cur.fetchall()
+            return rows
+    finally:
+        conn.close()
 
     engine = get_engine()
     with engine.connect() as conn:
@@ -204,6 +204,26 @@ def run_scoring(limit: int = Query(100, ge=1, le=1000)):
 
     return [row_to_dict(row) for row in results]
 
+@app.get("/listings/{listing_id}")
+def get_listing(listing_id: int):
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM listings_current
+                WHERE listing_id = %s;
+            """, (listing_id,))
+
+            row = cur.fetchone()
+
+            if row is None:
+                raise HTTPException(status_code=404, detail="Listing not found")
+
+            return row
+    finally:
+        conn.close()
 
 @app.get("/alerts", response_model=List[AlertRecord])
 def list_alerts(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
