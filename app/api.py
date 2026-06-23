@@ -77,7 +77,13 @@ def serialize_value(value: Any) -> Any:
 
 
 def row_to_dict(row) -> Dict[str, Any]:
-    return {key: serialize_value(value) for key, value in row._mapping.items()}
+    if hasattr(row, "_mapping"):
+        items = row._mapping.items()
+    elif hasattr(row, "items"):
+        items = row.items()
+    else:
+        items = dict(row).items()
+    return {key: serialize_value(value) for key, value in items}
 
 
 @app.get("/listings")
@@ -89,19 +95,13 @@ def get_listings():
             cur.execute("""
                 SELECT *
                 FROM listings_current
-                ORDER BY listing_id
+                ORDER BY id
                 LIMIT 100;
             """)
             rows = cur.fetchall()
-            return rows
+            return [row_to_dict(row) for row in rows]
     finally:
         conn.close()
-
-    engine = get_engine()
-    with engine.connect() as conn:
-        results = conn.execute(query, {"limit": limit, "offset": offset}).all()
-
-    return [row_to_dict(row) for row in results]
 
 
 @app.post("/score", response_model=List[ScoreResult])
@@ -213,7 +213,7 @@ def get_listing(listing_id: int):
             cur.execute("""
                 SELECT *
                 FROM listings_current
-                WHERE listing_id = %s;
+                WHERE id = %s;
             """, (listing_id,))
 
             row = cur.fetchone()
