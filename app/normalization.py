@@ -134,6 +134,7 @@ def normalize_listing(record: dict[str, Any]) -> dict[str, Any]:
         "beds": normalize_number(record.get("beds")),
         "baths": normalize_number(record.get("baths")),
         "sqft": normalize_number(record.get("sqft")),
+        "lot_size_acres": normalize_number(record.get("lot_size_acres")),
         "property_type": normalize_property_type(record.get("property_type")),
         "status": normalize_status(record.get("status")),
         "days_on_market": normalize_integer(record.get("days_on_market")),

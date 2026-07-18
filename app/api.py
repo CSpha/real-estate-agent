@@ -11,12 +11,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import get_engine
+from app.searches.router import router as saved_searches_router
 from app.transforms.score_listings_against_market import (
     score_listings_against_market,
 )
 
 
 app = FastAPI(title="Real Estate Agent API")
+app.include_router(saved_searches_router)
 
 
 class MarketScoreResult(BaseModel):

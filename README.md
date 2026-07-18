@@ -16,6 +16,8 @@ planned live-provider and saved-search phases.
 - History snapshots only when tracked listing data changes
 - Normalized listing statuses, property types, state values, ZIP codes, and dates
 - One authoritative county-market scoring implementation
+- Versioned, configurable saved searches with explainable matching
+- Stable, idempotent listing/search evaluation fingerprints
 - Alert-ledger uniqueness and safe repeated alert recording
 - A FastAPI API with database-aware health checking
 - Docker Compose readiness checks
@@ -152,7 +154,8 @@ That command:
 2. Stores previously unseen raw payloads
 3. Upserts changed current listings
 4. Adds history only for listings whose tracked state changed
-5. Does not send Slack messages
+5. Evaluates enabled saved searches and stores only new listing/search states
+6. Does not send Slack messages
 
 To preserve the prototype's original price-drop notification behavior:
 
@@ -162,6 +165,12 @@ python -m app.run_pipeline
 
 This requires `SLACK_WEBHOOK_URL`. Use a Slack test channel first. The full
 pipeline does not yet run potential-deal alerts automatically.
+
+To validate only ingestion and history without evaluating saved searches:
+
+```powershell
+python -m app.run_pipeline --skip-alerts --skip-search-evaluation
+```
 
 Individual workflows:
 
@@ -192,8 +201,82 @@ There is one Phase 1 scoring definition:
 The `potential_deals` view selects scores of 80 or higher.
 
 This score is only coarse market context. It is not an appraisal or a robust
-comparable-sale analysis. Phase 2 will separate saved-search matching from
-deal ranking and make criteria configurable.
+comparable-sale analysis. Saved-search matching is implemented separately from
+deal ranking.
+
+## Saved searches
+
+Phase 2 saved searches are separate from market scoring. A listing must satisfy
+every configured criterion to match; multiple location entries use OR
+semantics. Match and failure reasons are stored as structured JSON for every
+new listing state.
+
+Supported criteria:
+
+- State with optional county, city, and ZIP restrictions
+- Price range
+- Minimum/maximum beds and baths
+- Minimum/maximum square feet
+- Minimum/maximum lot acreage, when available
+- Property types
+- Listing statuses
+- Maximum days on market
+- Minimum price-drop amount and/or percentage
+- Minimum county-market score
+
+Example request:
+
+```json
+{
+  "name": "Wayne active homes",
+  "description": "Primary home search",
+  "criteria": {
+    "locations": [
+      {
+        "state": "OH",
+        "counties": ["Wayne"]
+      }
+    ],
+    "price": {
+      "min": 50000,
+      "max": 175000
+    },
+    "beds": {
+      "min": 3
+    },
+    "baths": {
+      "min": 1.5
+    },
+    "property_types": ["SingleFamilyResidence"],
+    "statuses": ["Active"],
+    "max_days_on_market": 60,
+    "price_drop": {
+      "min_amount": 5000,
+      "min_percent": 3
+    },
+    "deal_score": {
+      "min": 75
+    }
+  },
+  "enabled": true,
+  "notification_mode": "immediate",
+  "cooldown_minutes": 60
+}
+```
+
+Criteria edits increment `criteria_version`. Changes to the name, description,
+enabled flag, notification mode, or cooldown do not. Re-evaluating an unchanged
+listing under the same criteria version does not add another evaluation.
+
+Saved-search evaluation does not send Slack messages. Run it explicitly through
+the API or CLI:
+
+```powershell
+python -m app.searches.evaluate 1
+```
+
+The `enabled`, `notification_mode`, and `cooldown_minutes` fields are stored for
+future notification processing. They do not trigger delivery in Phase 2.
 
 ## API endpoints
 
@@ -203,6 +286,13 @@ deal ranking and make criteria configurable.
 - `GET /listings/{id}` — one current listing
 - `POST /score?limit=100` — runs authoritative market scoring and returns scores
 - `GET /alerts?limit=100&offset=0` — sent-alert ledger
+- `POST /saved-searches` — create a validated saved search
+- `GET /saved-searches` — list saved searches
+- `GET /saved-searches/{id}` — retrieve one saved search
+- `PATCH /saved-searches/{id}` — update settings or versioned criteria
+- `DELETE /saved-searches/{id}` — delete a search and its evaluations
+- `POST /saved-searches/{id}/evaluate` — evaluate current listings without Slack
+- `GET /saved-searches/{id}/evaluations` — inspect stored match decisions
 
 The API is not authenticated. Do not expose it publicly until authentication
 and authorization are implemented.
@@ -235,6 +325,7 @@ app/
   alerts/       Slack message detection, delivery, and sent ledger
   ingest/       Sample and county-data loaders
   transforms/   History, price-change, and market-score transforms
+  searches/     Saved-search models, evaluator, persistence, CLI, and routes
   api.py        FastAPI endpoints
   config.py     Environment settings
   db.py         Shared SQLAlchemy engine
@@ -246,7 +337,6 @@ tests/          Unit and optional PostgreSQL integration tests
 ## Current limitations
 
 - No authorized live listing provider
-- No configurable saved searches
 - County-wide median scoring is too coarse for investment decisions
 - Alert delivery does not yet use a transactional outbox/retry worker
 - No production scheduler, authentication, metrics, or backup automation

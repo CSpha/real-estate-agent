@@ -12,6 +12,28 @@ def test_root_does_not_require_database():
     assert response.json() == {"message": "Real Estate Agent API is running"}
 
 
+def test_saved_search_routes_are_exposed():
+    paths = TestClient(app).get("/openapi.json").json()["paths"]
+
+    assert "/saved-searches" in paths
+    assert "/saved-searches/{saved_search_id}" in paths
+    assert "/saved-searches/{saved_search_id}/evaluate" in paths
+    assert "/saved-searches/{saved_search_id}/evaluations" in paths
+
+
+def test_invalid_saved_search_is_rejected_before_database_access():
+    response = TestClient(app).post(
+        "/saved-searches",
+        json={
+            "name": "Invalid empty search",
+            "criteria": {},
+        },
+    )
+
+    assert response.status_code == 422
+    assert "At least one search criterion is required" in response.text
+
+
 def test_health_reports_database_failure_without_details(monkeypatch):
     class UnavailableEngine:
         def connect(self):

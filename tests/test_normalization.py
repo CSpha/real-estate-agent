@@ -57,6 +57,7 @@ def test_normalize_listing_produces_canonical_values():
             "beds": 3,
             "baths": 1,
             "sqft": 1240,
+            "lot_size_acres": 0.25,
             "property_type": "Single Family",
             "status": "active",
             "days_on_market": 12,
@@ -72,6 +73,7 @@ def test_normalize_listing_produces_canonical_values():
     assert listing["state"] == "OH"
     assert listing["property_type"] == "SingleFamilyResidence"
     assert listing["status"] == "Active"
+    assert listing["lot_size_acres"] == 0.25
     assert listing["first_seen_date"] == date(2026, 4, 23)
 
 

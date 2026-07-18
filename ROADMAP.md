@@ -20,6 +20,8 @@ contains:
 - Docker Compose services for PostgreSQL and the API, including readiness checks
 - Unit tests and opt-in isolated PostgreSQL integration tests
 - Setup, migration, pipeline, API, testing, and rollback documentation
+- Versioned saved searches with validated, explainable criteria evaluation
+- Stable listing/search event fingerprints and persisted match transitions
 
 The application is not yet connected to a live listing provider. The primary pipeline still loads `data/sample_listings.csv`.
 
@@ -35,13 +37,16 @@ documentation issues are resolved. Remaining work includes:
    clean Alembic baseline. Existing data must be exported and inspected before
    rebuilding or writing a one-time migration.
 3. The main pipeline does not run county data loading, market scoring, or
-   potential-deal alerts.
-4. Criteria and score thresholds are still hard-coded.
-5. County-wide median price alone is too coarse to identify a genuine deal.
-6. There is no authorized live listing provider.
-7. There is no production scheduler, outbox worker, structured logging,
+   potential-deal Slack alerts.
+4. The legacy `potential_deals` score threshold remains hard-coded, although
+   saved-search criteria are now configurable.
+5. Geographic bounding-box criteria are deferred until a listing provider
+   supplies reliable latitude/longitude fields.
+6. County-wide median price alone is too coarse to identify a genuine deal.
+7. There is no authorized live listing provider.
+8. There is no production scheduler, outbox worker, structured logging,
    pipeline-run history, authentication, monitoring, or backup automation.
-8. `/health` verifies database connectivity but cannot report listing freshness
+9. `/health` verifies database connectivity but cannot report listing freshness
    until live synchronization exists.
 
 ## Design principles
@@ -102,28 +107,30 @@ Validation completed:
 The two unchecked criteria have automated integration tests ready; they only
 require a configured PostgreSQL `_test` database.
 
-## Phase 2: Build configurable saved searches
+## Phase 2: Build configurable saved searches — Implemented locally
 
-### Work
+Database integration validation is pending because PostgreSQL/Docker is not
+available in the current implementation environment.
 
-- Add a `saved_searches` table.
-- Store validated, versioned criteria, initially as JSONB.
-- Build one shared criteria evaluator used by the pipeline and API.
-- Support initial filters such as:
-  - State, county, city, ZIP, and optional geographic bounds
-  - Minimum and maximum price
-  - Minimum beds and baths
-  - Property types
-  - Listing statuses
-  - Minimum/maximum square feet and acreage when available
-  - Maximum days on market
-  - Minimum price-drop amount and percentage
-  - Optional minimum deal score
-- Separate binary search matching from deal ranking.
-- Store the exact reasons a listing matched.
-- Version criteria so changing a search has explicit notification semantics.
-- Add notification controls such as immediate, digest, cooldown, and enabled/disabled.
-- Create stable event fingerprints based on listing, saved search, criteria version, event type, and material listing state.
+### Completed work
+
+- [x] Added `saved_searches` and `listing_search_evaluations` in Alembic
+      revision `0002_saved_searches`.
+- [x] Stored strict, validated, versioned criteria as JSONB.
+- [x] Built one pure criteria evaluator shared by the pipeline, API, and CLI.
+- [x] Added state, county, city, ZIP, price, beds, baths, property type,
+      listing status, square feet, acreage, days-on-market, price-drop, and
+      deal-score filters.
+- [x] Kept binary saved-search matching separate from county-market ranking.
+- [x] Stored structured matching and failure reasons.
+- [x] Incremented `criteria_version` only when criteria change.
+- [x] Added immediate/digest mode, cooldown, and enabled/disabled controls.
+- [x] Added stable listing and event fingerprints with database uniqueness.
+- [x] Recorded explicit nonmatch-to-match transitions without sending Slack.
+- [x] Added CRUD, evaluation, and evaluation-history API endpoints.
+- [x] Added a safe evaluation CLI and enabled-search pipeline step.
+- [ ] Add optional geographic bounding-box criteria after provider coordinates
+      are available.
 
 ### Example criteria
 
@@ -141,13 +148,28 @@ require a configured PostgreSQL `_test` database.
 }
 ```
 
-### Acceptance criteria
+### Acceptance status
 
-- Multiple saved searches can evaluate the same listing independently.
-- A listing produces a clear list of matching and non-matching reasons.
-- Re-running an unchanged listing and unchanged search produces no new event.
-- A meaningful listing change can produce exactly one new event.
-- Editing criteria creates predictable, documented notification behavior.
+- [x] Unit tests verify clear matching and non-matching reasons.
+- [x] Unit tests verify validation, normalization, inclusive boundaries, missing
+      values, location OR semantics, and price-drop thresholds.
+- [x] Integration tests cover multiple searches evaluating the same listing.
+- [x] Integration tests cover unchanged reruns producing no new event.
+- [x] Integration tests cover one new event per meaningful listing transition.
+- [x] Integration tests cover criteria versioning and non-versioning notification
+      setting edits.
+- [x] Notification semantics and the absence of Phase 2 Slack delivery are
+      documented.
+- [ ] Execute the Phase 2 integration test against a PostgreSQL `_test` database.
+
+Local validation completed:
+
+- 31 non-database tests passed
+- Five PostgreSQL integration tests collected and safely skipped
+- Ruff lint and format checks passed
+- Python compilation and dependency checks passed
+- Alembic upgrade and downgrade SQL generation passed
+- No Slack messages were sent
 
 ## Phase 3: Connect an authorized live listing provider
 
@@ -303,15 +325,15 @@ The test suite should eventually include:
    - Run `python -m app.run_pipeline --skip-alerts` twice against the development
      database and confirm that the second unchanged run adds no raw payloads,
      current changes, or history snapshots.
-2. Begin Phase 2 with one small vertical slice:
-   - Add the `saved_searches` table in a new Alembic revision.
-   - Define and validate a minimal criteria model for location, price, beds,
-     baths, property type, and status.
-   - Implement a pure criteria evaluator with boundary tests.
-   - Evaluate one saved search against sample listings without sending alerts.
-3. Keep matching separate from county-market ranking.
-4. Do not connect criteria evaluation to production Slack until event
-   fingerprints and dry-run behavior are verified.
+2. Validate Phase 2 against PostgreSQL:
+   - Apply `python -m alembic upgrade head`.
+   - Create at least two saved searches through the API.
+   - Run the pipeline twice with `--skip-alerts`.
+   - Confirm the second unchanged run records no new search evaluations.
+3. Begin Phase 3 by choosing the target geography and authorized RESO/API data
+   provider before writing provider-specific ingestion code.
+4. Do not connect saved-search match transitions to production Slack until the
+   Phase 4 outbox/retry design is implemented.
 
 ## External references
 

@@ -16,6 +16,18 @@ from app.alerts.send_price_drop_alerts import (
     record_alert,
 )
 from app.ingest.load_sample_listings import load_sample_csv
+from app.searches.models import (
+    SavedSearchCreate,
+    SavedSearchUpdate,
+    SearchCriteria,
+)
+from app.searches.service import (
+    create_saved_search,
+    delete_saved_search,
+    evaluate_saved_search,
+    list_search_evaluations,
+    update_saved_search,
+)
 from app.transforms.score_listings_against_market import (
     score_listings_against_market,
 )
@@ -200,3 +212,123 @@ def test_market_scoring_changes_only_when_inputs_change(postgres_engine):
 
     assert second_scored_at == first_scored_at
     assert potential_deal_count == 2
+
+
+def test_saved_search_versioning_and_evaluation_are_idempotent(postgres_engine):
+    search = create_saved_search(
+        SavedSearchCreate(
+            name="Wayne active homes",
+            description="Phase 2 integration search",
+            criteria=SearchCriteria(
+                locations=[{"state": "OH", "counties": ["Wayne"]}],
+                price={"max": 80000},
+                beds={"min": 3},
+                property_types=["single family"],
+                statuses=["active"],
+            ),
+            notification_mode="immediate",
+            cooldown_minutes=60,
+        ),
+        postgres_engine,
+    )
+
+    assert search.criteria_version == 1
+    first_run = evaluate_saved_search(search.id, engine=postgres_engine)
+    second_run = evaluate_saved_search(search.id, engine=postgres_engine)
+
+    assert first_run.evaluated == 3
+    assert first_run.matched == 1
+    assert first_run.new_matches == 1
+    assert first_run.recorded == 3
+    assert second_run.evaluated == 3
+    assert second_run.matched == 1
+    assert second_run.new_matches == 0
+    assert second_run.recorded == 0
+
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE listings_current
+                SET beds = 2, updated_at = CURRENT_TIMESTAMP
+                WHERE source = 'sample_feed'
+                  AND source_listing_id = '1001'
+                """
+            )
+        )
+    nonmatching_change = evaluate_saved_search(search.id, engine=postgres_engine)
+    assert nonmatching_change.recorded == 1
+    assert nonmatching_change.matched == 0
+    assert nonmatching_change.new_matches == 0
+
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE listings_current
+                SET beds = 3, updated_at = CURRENT_TIMESTAMP
+                WHERE source = 'sample_feed'
+                  AND source_listing_id = '1001'
+                """
+            )
+        )
+    matching_change = evaluate_saved_search(search.id, engine=postgres_engine)
+    assert matching_change.recorded == 1
+    assert matching_change.matched == 1
+    assert matching_change.new_matches == 1
+
+    second_search = create_saved_search(
+        SavedSearchCreate(
+            name="All active sample homes",
+            criteria=SearchCriteria(statuses=["Active"]),
+        ),
+        postgres_engine,
+    )
+    independent_run = evaluate_saved_search(second_search.id, engine=postgres_engine)
+    assert independent_run.matched == 2
+    assert independent_run.recorded == 3
+
+    notification_update = update_saved_search(
+        search.id,
+        SavedSearchUpdate(notification_mode="digest", cooldown_minutes=1440),
+        postgres_engine,
+    )
+    assert notification_update.criteria_version == 1
+
+    criteria_update = update_saved_search(
+        search.id,
+        SavedSearchUpdate(
+            criteria=SearchCriteria(
+                locations=[{"state": "OH", "counties": ["Wayne"]}],
+                price={"max": 60000},
+                statuses=["active"],
+            )
+        ),
+        postgres_engine,
+    )
+    assert criteria_update.criteria_version == 2
+
+    third_run = evaluate_saved_search(search.id, engine=postgres_engine)
+    assert third_run.recorded == 3
+    assert third_run.matched == 0
+    assert third_run.new_matches == 0
+
+    evaluations = list_search_evaluations(search.id, engine=postgres_engine)
+    assert len(evaluations) == 8
+    assert any(item.became_match for item in evaluations)
+    assert all(item.match_reasons or item.failed_reasons for item in evaluations)
+
+    delete_saved_search(second_search.id, postgres_engine)
+    delete_saved_search(search.id, postgres_engine)
+    with postgres_engine.connect() as conn:
+        remaining = conn.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM listing_search_evaluations
+                WHERE saved_search_id = :saved_search_id
+                """
+            ),
+            {"saved_search_id": search.id},
+        )
+    assert remaining == 0

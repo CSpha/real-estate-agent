@@ -14,7 +14,7 @@ from app.db import get_engine
 from app.normalization import normalize_listing
 
 
-EXPECTED_COLUMNS = [
+REQUIRED_COLUMNS = [
     "source",
     "source_listing_id",
     "address",
@@ -32,6 +32,8 @@ EXPECTED_COLUMNS = [
     "last_seen_date",
     "price_per_sqft",
 ]
+
+OPTIONAL_COLUMNS = ["lot_size_acres"]
 
 RAW_INSERT_SQL = text(
     """
@@ -65,6 +67,7 @@ CURRENT_UPSERT_SQL = text(
         beds,
         baths,
         sqft,
+        lot_size_acres,
         property_type,
         status,
         days_on_market,
@@ -83,6 +86,7 @@ CURRENT_UPSERT_SQL = text(
         :beds,
         :baths,
         :sqft,
+        :lot_size_acres,
         :property_type,
         :status,
         :days_on_market,
@@ -100,6 +104,7 @@ CURRENT_UPSERT_SQL = text(
         beds = EXCLUDED.beds,
         baths = EXCLUDED.baths,
         sqft = EXCLUDED.sqft,
+        lot_size_acres = EXCLUDED.lot_size_acres,
         property_type = EXCLUDED.property_type,
         status = EXCLUDED.status,
         days_on_market = EXCLUDED.days_on_market,
@@ -122,6 +127,7 @@ CURRENT_UPSERT_SQL = text(
         listings_current.beds,
         listings_current.baths,
         listings_current.sqft,
+        listings_current.lot_size_acres,
         listings_current.property_type,
         listings_current.status,
         listings_current.days_on_market,
@@ -137,6 +143,7 @@ CURRENT_UPSERT_SQL = text(
         EXCLUDED.beds,
         EXCLUDED.baths,
         EXCLUDED.sqft,
+        EXCLUDED.lot_size_acres,
         EXCLUDED.property_type,
         EXCLUDED.status,
         EXCLUDED.days_on_market,
@@ -185,11 +192,18 @@ def load_sample_csv(file_path: str, engine: Engine | None = None) -> dict[str, i
         dtype={"source": "string", "source_listing_id": "string", "zip": "string"},
     )
 
-    missing_columns = [col for col in EXPECTED_COLUMNS if col not in df.columns]
+    missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
     if missing_columns:
         raise ValueError(f"Missing columns in CSV: {missing_columns}")
 
-    clean_df = df[EXPECTED_COLUMNS].astype(object).where(pd.notnull(df), None)
+    selected_columns = REQUIRED_COLUMNS + [
+        column for column in OPTIONAL_COLUMNS if column in df.columns
+    ]
+    clean_df = (
+        df[selected_columns]
+        .astype(object)
+        .where(pd.notnull(df[selected_columns]), None)
+    )
     records = clean_df.to_dict(orient="records")
     raw_records = [_prepare_raw_record(record) for record in records]
     normalized_records = [normalize_listing(record) for record in records]
