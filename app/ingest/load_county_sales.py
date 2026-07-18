@@ -1,40 +1,28 @@
-import os
+from __future__ import annotations
+
 from pathlib import Path
 
 import pandas as pd
-import psycopg2
-from psycopg2.extras import execute_values
-from dotenv import load_dotenv
+from sqlalchemy import Engine, text
 
+from app.db import get_engine
 
-load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_PATH = PROJECT_ROOT / "data" / "county_sales.csv"
 
 
-def get_required_env(name):
-    value = os.getenv(name)
-    if not value:
-        raise ValueError(f"Missing required environment variable: {name}")
-    return value
+def load_county_sales(
+    file_path: str | Path = DATA_PATH,
+    *,
+    default_state: str = "OH",
+    engine: Engine | None = None,
+) -> int:
+    data_path = Path(file_path)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Could not find file: {data_path}")
 
-
-def get_connection():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        port=os.getenv("DB_PORT", "5432"),
-        dbname=os.getenv("DB_NAME", "realestate"),
-        user=os.getenv("DB_USER", "realestate"),
-        password=get_required_env("DB_PASSWORD"),
-    )
-
-def load_county_sales():
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"Could not find file: {DATA_PATH}")
-
-    df = pd.read_csv(DATA_PATH)
-
+    df = pd.read_csv(data_path)
     expected_columns = [
         "county_name",
         "period_date",
@@ -44,31 +32,37 @@ def load_county_sales():
         "active_listings",
         "median_days_on_market",
     ]
-
     missing_columns = [col for col in expected_columns if col not in df.columns]
     if missing_columns:
         raise ValueError(f"Missing expected columns: {missing_columns}")
 
+    if "state" not in df.columns:
+        df["state"] = default_state
+
+    df["state"] = df["state"].astype(str).str.strip().str.upper()
     df["period_date"] = pd.to_datetime(df["period_date"]).dt.date
-    df = df.where(pd.notnull(df), None)
+    df = df.astype(object).where(pd.notnull(df), None)
+    records = df.to_dict(orient="records")
+    for record in records:
+        if len(record["state"]) != 2:
+            raise ValueError(
+                f"State must be a two-letter code, got: {record['state']!r}"
+            )
+        for field in (
+            "homes_sold",
+            "new_listings",
+            "active_listings",
+            "median_days_on_market",
+        ):
+            if record[field] is not None:
+                record[field] = int(record[field])
+        record["source_file"] = data_path.name
 
-    rows = [
-        (
-            row["county_name"],
-            row["period_date"],
-            row["median_sale_price"],
-            row["homes_sold"],
-            row["new_listings"],
-            row["active_listings"],
-            row["median_days_on_market"],
-            DATA_PATH.name,
-        )
-        for _, row in df.iterrows()
-    ]
-
-    insert_sql = """
+    insert_sql = text(
+        """
         INSERT INTO county_sales (
             county_name,
+            state,
             period_date,
             median_sale_price,
             homes_sold,
@@ -77,8 +71,18 @@ def load_county_sales():
             median_days_on_market,
             source_file
         )
-        VALUES %s
-        ON CONFLICT (county_name, period_date)
+        VALUES (
+            :county_name,
+            :state,
+            :period_date,
+            :median_sale_price,
+            :homes_sold,
+            :new_listings,
+            :active_listings,
+            :median_days_on_market,
+            :source_file
+        )
+        ON CONFLICT (county_name, state, period_date)
         DO UPDATE SET
             median_sale_price = EXCLUDED.median_sale_price,
             homes_sold = EXCLUDED.homes_sold,
@@ -86,14 +90,35 @@ def load_county_sales():
             active_listings = EXCLUDED.active_listings,
             median_days_on_market = EXCLUDED.median_days_on_market,
             source_file = EXCLUDED.source_file,
-            loaded_at = CURRENT_TIMESTAMP;
-    """
+            loaded_at = CURRENT_TIMESTAMP
+        WHERE ROW(
+            county_sales.median_sale_price,
+            county_sales.homes_sold,
+            county_sales.new_listings,
+            county_sales.active_listings,
+            county_sales.median_days_on_market,
+            county_sales.source_file
+        ) IS DISTINCT FROM ROW(
+            EXCLUDED.median_sale_price,
+            EXCLUDED.homes_sold,
+            EXCLUDED.new_listings,
+            EXCLUDED.active_listings,
+            EXCLUDED.median_days_on_market,
+            EXCLUDED.source_file
+        )
+        """
+    )
 
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            execute_values(cur, insert_sql, rows)
+    engine = engine or get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(insert_sql, records)
 
-    print(f"Loaded {len(rows)} county sales rows into county_sales.")
+    changed = max(result.rowcount, 0)
+    print(
+        f"County sales load complete: {len(records)} received, "
+        f"{changed} row(s) inserted or changed."
+    )
+    return changed
 
 
 if __name__ == "__main__":

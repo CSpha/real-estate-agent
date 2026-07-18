@@ -3,7 +3,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 
-from app.utils.db import get_engine
+from app.db import get_engine
 
 
 def run_sql_file(file_path: str):

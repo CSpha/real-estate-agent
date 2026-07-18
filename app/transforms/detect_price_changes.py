@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from app.utils.db import get_engine
+from app.db import get_engine
 
 
 def detect_price_changes():
@@ -18,7 +18,7 @@ def detect_price_changes():
                 snapshot_timestamp,
                 ROW_NUMBER() OVER (
                     PARTITION BY source, source_listing_id
-                    ORDER BY snapshot_timestamp DESC
+                    ORDER BY snapshot_timestamp DESC, id DESC
                 ) AS rn
             FROM listing_history
         ),

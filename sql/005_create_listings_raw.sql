@@ -1,6 +1,0 @@
-CREATE TABLE IF NOT EXISTS listings_raw (
-    id SERIAL PRIMARY KEY,
-    source TEXT NOT NULL,
-    raw_record_json TEXT NOT NULL,
-    ingested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);

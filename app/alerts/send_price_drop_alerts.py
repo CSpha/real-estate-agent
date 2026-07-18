@@ -1,14 +1,13 @@
 import json
-import os
 
 import requests
-from dotenv import load_dotenv
-from sqlalchemy import text
+from sqlalchemy import Engine, text
 
-from app.utils.db import get_engine
+from app.config import get_settings, require_setting
+from app.db import get_engine
 
 
-def get_price_drop_events():
+def get_price_drop_events(engine: Engine | None = None):
     query = text(
         """
         WITH ranked_history AS (
@@ -23,7 +22,7 @@ def get_price_drop_events():
                 snapshot_timestamp,
                 ROW_NUMBER() OVER (
                     PARTITION BY source, source_listing_id
-                    ORDER BY snapshot_timestamp DESC
+                    ORDER BY snapshot_timestamp DESC, id DESC
                 ) AS rn
             FROM listing_history
         ),
@@ -79,7 +78,7 @@ def get_price_drop_events():
         """
     )
 
-    engine = get_engine()
+    engine = engine or get_engine()
 
     with engine.connect() as conn:
         return conn.execute(query).mappings().all()
@@ -103,7 +102,7 @@ def send_to_slack(webhook_url: str, message_payload: dict):
     response.raise_for_status()
 
 
-def record_alert(event):
+def record_alert(event, engine: Engine | None = None) -> bool:
     insert_sql = text(
         """
         INSERT INTO alerts_sent (
@@ -118,8 +117,15 @@ def record_alert(event):
             :source,
             :source_listing_id,
             :event_timestamp,
-            :payload_json
+            CAST(:payload_json AS JSONB)
         )
+        ON CONFLICT (
+            alert_type,
+            source,
+            source_listing_id,
+            event_timestamp
+        )
+        DO NOTHING
         """
     )
 
@@ -135,10 +141,10 @@ def record_alert(event):
         }
     )
 
-    engine = get_engine()
+    engine = engine or get_engine()
 
     with engine.begin() as conn:
-        conn.execute(
+        result = conn.execute(
             insert_sql,
             {
                 "alert_type": "price_drop",
@@ -148,14 +154,14 @@ def record_alert(event):
                 "payload_json": payload_json,
             },
         )
+    return result.rowcount == 1
 
 
 def main():
-    load_dotenv()
-    webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-
-    if not webhook_url:
-        raise ValueError("SLACK_WEBHOOK_URL is not set in .env")
+    webhook_url = require_setting(
+        get_settings().slack_webhook_url,
+        "SLACK_WEBHOOK_URL",
+    )
 
     events = get_price_drop_events()
 

@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from app.utils.db import get_engine
+from app.db import get_engine
 
 
 if __name__ == "__main__":
@@ -26,4 +26,3 @@ if __name__ == "__main__":
         results = conn.execute(query)
         for row in results:
             print(row)
-        

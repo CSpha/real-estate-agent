@@ -1,3 +1,4 @@
+alembic==1.18.5
 certifi==2026.2.25
 charset-normalizer==3.4.7
 greenlet==3.4.0
