@@ -1,6 +1,6 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: July 15, 2026
+Last reviewed: July 18, 2026
 
 ## Goal
 
@@ -8,34 +8,41 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 
 ## Current state
 
-The repository contains the main pieces of a prototype:
+Phase 1 stabilization is implemented in commit `8b892c7`. The repository now
+contains:
 
-- PostgreSQL tables for current listings, history, market scores, and sent alerts
-- Sample CSV ingestion and current-listing upserts
-- Listing snapshots and price-change detection
-- County-level market scoring
+- One authoritative Alembic-managed PostgreSQL schema
+- Immutable raw JSON payloads and normalized current listings
+- Idempotent sample ingestion and change-aware listing history
+- One authoritative county-level market scoring implementation
 - Slack alerts for price drops and potential deals
-- A small FastAPI API
-- Docker Compose configuration for PostgreSQL
+- A FastAPI API with database-aware health checking
+- Docker Compose services for PostgreSQL and the API, including readiness checks
+- Unit tests and opt-in isolated PostgreSQL integration tests
+- Setup, migration, pipeline, API, testing, and rollback documentation
 
 The application is not yet connected to a live listing provider. The primary pipeline still loads `data/sample_listings.csv`.
 
-## Known issues
+## Remaining issues
 
-These should be resolved before adding a live listing feed:
+The original Phase 1 schema, configuration, ingestion, scoring, API, and
+documentation issues are resolved. Remaining work includes:
 
-1. `load_sample_listings.py` inserts normalized listing columns into `listings_raw`, but `sql/005_create_listings_raw.sql` defines `listings_raw` as a raw JSON table.
-2. SQL migrations `007_create_listing_market_scores.sql` and `009_create_listing_market_scores.sql` define incompatible versions of the same table.
-3. Database configuration is split between `POSTGRES_*` and `DB_*` environment-variable conventions.
-4. The main pipeline does not run county data loading, market scoring, or potential-deal alerts.
-5. Every run snapshots every listing, including unchanged listings.
-6. Potential-deal alerts use `scored_at` as their event identity and can be repeated after an unchanged listing is rescored.
-7. The API `/score` SQL references `l.status`, although the CTE exposes `current_status`.
-8. Criteria and score thresholds are hard-coded in multiple places.
-9. County-wide median price alone is too coarse to identify a genuine deal.
-10. There are no automated tests, production scheduler, worker, structured logs, or pipeline-run records.
-11. The API `/health` endpoint does not verify the database or listing-sync freshness.
-12. The README is empty.
+1. Phase 1 integration tests still need to be executed against an actual
+   PostgreSQL database whose name ends in `_test`; Docker/PostgreSQL was not
+   available in the implementation environment.
+2. An existing prototype database is not automatically reconciled with the new
+   clean Alembic baseline. Existing data must be exported and inspected before
+   rebuilding or writing a one-time migration.
+3. The main pipeline does not run county data loading, market scoring, or
+   potential-deal alerts.
+4. Criteria and score thresholds are still hard-coded.
+5. County-wide median price alone is too coarse to identify a genuine deal.
+6. There is no authorized live listing provider.
+7. There is no production scheduler, outbox worker, structured logging,
+   pipeline-run history, authentication, monitoring, or backup automation.
+8. `/health` verifies database connectivity but cannot report listing freshness
+   until live synchronization exists.
 
 ## Design principles
 
@@ -49,33 +56,51 @@ These should be resolved before adding a live listing feed:
 - Keep alert thresholds configurable and versioned.
 - Avoid changing notification behavior without testing it against a Slack test channel.
 
-## Phase 1: Stabilize the prototype
+## Phase 1: Stabilize the prototype — Implemented
 
-### Work
+Implementation commit: `8b892c7`
 
-- Choose one authoritative database schema.
-- Replace ambiguous numbered SQL execution with a migration system, preferably Alembic.
-- Resolve the `listings_raw` schema/loader mismatch.
-- Consolidate database configuration into one settings module and one connection provider.
-- Standardize on one environment-variable convention.
-- Add `.env.example` with safe placeholders and no secrets.
-- Fix the API `/score` SQL bug.
-- Normalize status and property-type values during ingestion.
-- Decide whether the API score or county-market score is authoritative; remove the duplicate implementation.
-- Add a PostgreSQL health check to Docker Compose.
-- Add application and PostgreSQL services to Compose if local containerized operation is desired.
-- Write README setup, migration, pipeline, API, and test instructions.
-- Add unit and PostgreSQL integration tests.
+Validation completed:
 
-### Acceptance criteria
+- 19 unit/API tests passed
+- Ruff lint and formatting checks passed
+- Python compilation and dependency checks passed
+- Alembic upgrade and downgrade SQL generation passed
+- Four PostgreSQL integration tests were added and safely skipped because no
+  `_test` database was available
+- No Slack messages were sent during implementation or validation
 
-- A new developer can start PostgreSQL and initialize the schema from documented commands.
-- All modules use the same database settings.
-- Sample ingestion runs successfully against a fresh database.
-- Re-running ingestion is safe and produces the documented results.
-- API imports and affected endpoints run without SQL/runtime errors.
-- Tests cover ingestion, normalization, price-change detection, and alert deduplication.
-- No credentials are committed.
+### Completed work
+
+- [x] Chose the source-aware `listing_market_scores` schema as authoritative.
+- [x] Replaced ambiguous numbered SQL schema files with Alembic.
+- [x] Made `listings_raw` an immutable JSONB payload store with content hashes.
+- [x] Consolidated configuration into one settings module and SQLAlchemy engine.
+- [x] Standardized database settings on `DB_*`, with optional `DATABASE_URL`.
+- [x] Added `.env.example` with safe placeholders and no secrets.
+- [x] Replaced the broken duplicate API scoring query with the authoritative
+      county-market scorer.
+- [x] Normalized status, property type, state, ZIP, dates, and integer fields.
+- [x] Added PostgreSQL readiness checks and API startup to Docker Compose.
+- [x] Added comprehensive README documentation.
+- [x] Added unit and opt-in isolated PostgreSQL integration tests.
+- [x] Added `--skip-alerts` for safe pipeline validation.
+- [x] Made current upserts, raw ingestion, history snapshots, scoring timestamps,
+      and alert-ledger recording idempotent where possible.
+
+### Acceptance status
+
+- [x] PostgreSQL startup and schema initialization are documented.
+- [x] All modules use the same database settings and engine.
+- [ ] Execute sample ingestion against a fresh live PostgreSQL database.
+- [ ] Execute sample ingestion twice and confirm database-level idempotency.
+- [x] API imports and non-database endpoint tests pass.
+- [x] Tests cover ingestion, normalization, price changes, scoring stability,
+      alert-ledger idempotency, and dry-run alert suppression.
+- [x] No credentials are committed.
+
+The two unchecked criteria have automated integration tests ready; they only
+require a configured PostgreSQL `_test` database.
 
 ## Phase 2: Build configurable saved searches
 
@@ -271,18 +296,22 @@ The test suite should eventually include:
 
 ## Next session: start here
 
-Begin with Phase 1 and keep the first change small:
-
-1. Inspect the actual development database schema, if a database is available.
-2. Decide which `listing_market_scores` definition is authoritative.
-3. Decide that `listings_raw` will store immutable raw JSON payloads plus ingestion metadata.
-4. Introduce an initial migration baseline or Alembic.
-5. Consolidate database settings and add `.env.example`.
-6. Fix sample ingestion so it writes raw JSON and normalized current listings consistently.
-7. Run sample ingestion twice and verify current/history/idempotency behavior.
-8. Add tests for the repaired flow before moving to saved searches.
-
-Do not change price-drop or potential-deal Slack behavior during this stabilization work without first using a dry-run or test channel, because an accidental change could spam the production Slack channel.
+1. If Docker/PostgreSQL is available, complete the two remaining Phase 1
+   acceptance checks:
+   - Start a fresh test database whose name ends in `_test`.
+   - Run `python -m pytest -m integration`.
+   - Run `python -m app.run_pipeline --skip-alerts` twice against the development
+     database and confirm that the second unchanged run adds no raw payloads,
+     current changes, or history snapshots.
+2. Begin Phase 2 with one small vertical slice:
+   - Add the `saved_searches` table in a new Alembic revision.
+   - Define and validate a minimal criteria model for location, price, beds,
+     baths, property type, and status.
+   - Implement a pure criteria evaluator with boundary tests.
+   - Evaluate one saved search against sample listings without sending alerts.
+3. Keep matching separate from county-market ranking.
+4. Do not connect criteria evaluation to production Slack until event
+   fingerprints and dry-run behavior are verified.
 
 ## External references
 
@@ -291,4 +320,3 @@ Do not change price-drop or potential-deal Slack behavior during this stabilizat
 - Slack incoming webhooks: https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks
 - Slack rate limits: https://docs.slack.dev/apis/web-api/rate-limits/
 - Docker Compose startup/readiness guidance: https://docs.docker.com/compose/how-tos/startup-order/
-
