@@ -8,8 +8,9 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 
 ## Current state
 
-Phase 1 stabilization is implemented in commit `8b892c7`. The repository now
-contains:
+Phase 1 stabilization is implemented in commit `8b892c7`. Phase 2 configurable
+saved searches are implemented in commit `17cee39`. Both commits are pushed to
+`origin/main`. The repository now contains:
 
 - One authoritative Alembic-managed PostgreSQL schema
 - Immutable raw JSON payloads and normalized current listings
@@ -107,10 +108,13 @@ Validation completed:
 The two unchecked criteria have automated integration tests ready; they only
 require a configured PostgreSQL `_test` database.
 
-## Phase 2: Build configurable saved searches — Implemented locally
+## Phase 2: Build configurable saved searches — Implemented
 
-Database integration validation is pending because PostgreSQL/Docker is not
-available in the current implementation environment.
+Implementation commit: `17cee39`
+
+The implementation is committed and pushed. Live database integration
+validation remains pending because PostgreSQL/Docker was not available in the
+implementation environment.
 
 ### Completed work
 
