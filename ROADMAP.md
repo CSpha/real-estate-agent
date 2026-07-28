@@ -23,6 +23,8 @@ saved searches are implemented in commit `17cee39`. Both commits are pushed to
 - Setup, migration, pipeline, API, testing, and rollback documentation
 - Versioned saved searches with validated, explainable criteria evaluation
 - Stable listing/search event fingerprints and persisted match transitions
+- A PostgreSQL-backed price-drop alert outbox with atomic worker claims,
+  retries, and visible permanent failures
 
 The application is not yet connected to a live listing provider. The primary pipeline still loads `data/sample_listings.csv`.
 
@@ -31,9 +33,9 @@ The application is not yet connected to a live listing provider. The primary pip
 The original Phase 1 schema, configuration, ingestion, scoring, API, and
 documentation issues are resolved. Remaining work includes:
 
-1. Phase 1 integration tests still need to be executed against an actual
-   PostgreSQL database whose name ends in `_test`; Docker/PostgreSQL was not
-   available in the implementation environment.
+1. Continue expanding PostgreSQL integration coverage as later phases are
+   implemented; the Phase 1 and Phase 2 integration suite now passes against
+   the isolated `realestate_test` Docker database.
 2. An existing prototype database is not automatically reconciled with the new
    clean Alembic baseline. Existing data must be exported and inspected before
    rebuilding or writing a one-time migration.
@@ -45,8 +47,10 @@ documentation issues are resolved. Remaining work includes:
    supplies reliable latitude/longitude fields.
 6. County-wide median price alone is too coarse to identify a genuine deal.
 7. There is no authorized live listing provider.
-8. There is no production scheduler, outbox worker, structured logging,
-   pipeline-run history, authentication, monitoring, or backup automation.
+8. There is no production scheduler or long-running worker process. The
+   queue and worker commands are separate, but must still be scheduled.
+   Structured logging, pipeline-run history, authentication, monitoring, and
+   backup automation are also absent.
 9. `/health` verifies database connectivity but cannot report listing freshness
    until live synchronization exists.
 
@@ -216,12 +220,16 @@ next_cursor(response)
 
 ### Work
 
-- Introduce an alert outbox instead of sending directly from detection logic.
-- Use states such as `pending`, `sending`, `sent`, `retryable_failed`, and `permanent_failed`.
-- Add attempt counts, next-attempt timestamps, and error summaries.
-- Claim pending alerts safely so multiple workers cannot send the same event.
-- Make the event fingerprint uniquely constrained in PostgreSQL.
-- Retry temporary Slack failures with backoff and jitter.
+- [x] Introduce an alert outbox for price drops instead of sending directly
+  from detection logic.
+- [x] Use `pending`, `processing`, `sent`, `retryable_failed`, and
+  `permanent_failed` states.
+- [x] Add attempt counts, next-attempt timestamps, and error summaries.
+- [x] Claim pending alerts safely so multiple workers cannot send the same event.
+- [x] Uniquely constrain the price-drop event identity in PostgreSQL.
+- [x] Retry temporary Slack failures with exponential backoff.
+- [x] Separate price-drop detection/queueing from the delivery worker command.
+- Add jitter to retry delays.
 - Honor Slack HTTP 429 `Retry-After` responses.
 - Pace incoming-webhook messages at no more than approximately one per second.
 - Send malformed payloads and invalid/revoked webhook failures to permanent-failure handling.

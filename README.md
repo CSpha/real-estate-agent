@@ -157,14 +157,41 @@ That command:
 5. Evaluates enabled saved searches and stores only new listing/search states
 6. Does not send Slack messages
 
-To preserve the prototype's original price-drop notification behavior:
+To load, snapshot, evaluate searches, and queue price-drop events:
 
 ```powershell
 python -m app.run_pipeline
 ```
 
-This requires `SLACK_WEBHOOK_URL`. Use a Slack test channel first. The full
-pipeline does not yet run potential-deal alerts automatically.
+The pipeline does not contact Slack and does not require `SLACK_WEBHOOK_URL`.
+Deliver queued alerts separately:
+
+```powershell
+python -m app.alerts.process_alert_outbox
+```
+
+The worker requires `SLACK_WEBHOOK_URL`. Use a Slack test channel first. Limit
+the amount of work in one invocation with `--limit`, for example:
+
+```powershell
+python -m app.alerts.process_alert_outbox --limit 25
+```
+
+The full pipeline does not yet run potential-deal alerts automatically.
+
+Price-drop delivery uses an `alert_outbox` table:
+
+1. Detection inserts each event once using its listing and event timestamp.
+2. A worker atomically claims one due event with `FOR UPDATE SKIP LOCKED`.
+3. A successful Slack request marks the outbox row `sent` and writes the
+   `alerts_sent` receipt in one database transaction.
+4. Temporary failures are retried with exponential backoff; permanent failures
+   remain in the outbox for inspection.
+
+This prevents two workers from normally sending the same pending event. Slack
+webhooks do not support idempotency keys, so a process crash after Slack accepts
+a message but before PostgreSQL records success can still produce a duplicate
+on retry. Delivery is therefore at-least-once, not mathematically exactly-once.
 
 To validate only ingestion and history without evaluating saved searches:
 
@@ -180,7 +207,8 @@ python -m app.transforms.snapshot_listings
 python -m app.transforms.detect_price_changes
 python -m app.ingest.load_county_sales
 python -m app.transforms.score_listings_against_market
-python -m app.alerts.send_price_drop_alerts
+python -m app.alerts.queue_price_drop_alerts
+python -m app.alerts.process_alert_outbox
 python -m app.alerts.send_potential_deal_alerts
 ```
 

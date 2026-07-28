@@ -1,20 +1,25 @@
 from __future__ import annotations
 
 import os
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import requests
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
 
 from app.alerts.send_price_drop_alerts import (
+    enqueue_price_drop_events,
+    format_slack_message,
     get_price_drop_events,
     record_alert,
 )
+from app.alerts.outbox import deliver_pending_alerts
 from app.ingest.load_sample_listings import load_sample_csv
 from app.searches.models import (
     SavedSearchCreate,
@@ -133,6 +138,168 @@ def test_material_price_change_creates_one_event(postgres_engine):
     assert len(matching) == 1
     assert matching[0]["previous_price"] == 78500
     assert matching[0]["current_price"] == 70000
+
+
+def test_price_drop_outbox_queues_and_delivers_once(postgres_engine):
+    assert enqueue_price_drop_events(postgres_engine) == 1
+    assert enqueue_price_drop_events(postgres_engine) == 0
+
+    sent_payloads = []
+
+    def fake_send(webhook_url, payload):
+        sent_payloads.append((webhook_url, payload))
+
+    first_run = deliver_pending_alerts(
+        "https://example.invalid/test-webhook",
+        {"price_drop": format_slack_message},
+        send=fake_send,
+        engine=postgres_engine,
+    )
+    second_run = deliver_pending_alerts(
+        "https://example.invalid/test-webhook",
+        {"price_drop": format_slack_message},
+        send=fake_send,
+        engine=postgres_engine,
+    )
+
+    assert first_run == {"sent": 1, "failed": 0}
+    assert second_run == {"sent": 0, "failed": 0}
+    assert len(sent_payloads) == 1
+
+    with postgres_engine.connect() as conn:
+        outbox_row = conn.execute(
+            text(
+                """
+                SELECT status, attempt_count, sent_at
+                FROM alert_outbox
+                WHERE source_listing_id = '1001'
+                """
+            )
+        ).one()
+        receipt_count = conn.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM alerts_sent
+                WHERE alert_type = 'price_drop'
+                  AND source_listing_id = '1001'
+                """
+            )
+        )
+
+    assert outbox_row.status == "sent"
+    assert outbox_row.attempt_count == 1
+    assert outbox_row.sent_at is not None
+    assert receipt_count == 1
+
+
+def test_outbox_records_retryable_and_permanent_failures(postgres_engine):
+    with postgres_engine.begin() as conn:
+        outbox_id = conn.scalar(
+            text(
+                """
+                INSERT INTO alert_outbox (
+                    alert_type,
+                    source,
+                    source_listing_id,
+                    event_timestamp,
+                    payload_json
+                )
+                VALUES (
+                    'price_drop',
+                    'sample_feed',
+                    'retry-test',
+                    :event_timestamp,
+                    CAST(:payload_json AS JSONB)
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "event_timestamp": datetime(
+                    2026, 7, 19, tzinfo=timezone.utc
+                ),
+                "payload_json": json.dumps(
+                    {
+                        "address": "2 Retry St",
+                        "city": "Wooster",
+                        "state": "OH",
+                        "previous_price": "100000",
+                        "current_price": "90000",
+                        "price_change": "-10000",
+                        "price_change_pct": "-10",
+                        "source_listing_id": "retry-test",
+                    }
+                ),
+            },
+        )
+
+    def timeout_send(_webhook_url, _payload):
+        raise requests.Timeout("temporary timeout")
+
+    retry_run = deliver_pending_alerts(
+        "https://example.invalid/test-webhook",
+        {"price_drop": format_slack_message},
+        send=timeout_send,
+        engine=postgres_engine,
+    )
+    assert retry_run == {"sent": 0, "failed": 1}
+
+    with postgres_engine.begin() as conn:
+        retry_row = conn.execute(
+            text(
+                """
+                SELECT status, attempt_count, available_at, last_error
+                FROM alert_outbox
+                WHERE id = :outbox_id
+                """
+            ),
+            {"outbox_id": outbox_id},
+        ).one()
+        conn.execute(
+            text(
+                """
+                UPDATE alert_outbox
+                SET available_at = CURRENT_TIMESTAMP
+                WHERE id = :outbox_id
+                """
+            ),
+            {"outbox_id": outbox_id},
+        )
+
+    assert retry_row.status == "retryable_failed"
+    assert retry_row.attempt_count == 1
+    assert "temporary timeout" in retry_row.last_error
+
+    response = requests.Response()
+    response.status_code = 400
+
+    def bad_request_send(_webhook_url, _payload):
+        raise requests.HTTPError("bad webhook", response=response)
+
+    permanent_run = deliver_pending_alerts(
+        "https://example.invalid/test-webhook",
+        {"price_drop": format_slack_message},
+        send=bad_request_send,
+        engine=postgres_engine,
+    )
+    assert permanent_run == {"sent": 0, "failed": 1}
+
+    with postgres_engine.connect() as conn:
+        permanent_row = conn.execute(
+            text(
+                """
+                SELECT status, attempt_count, last_error
+                FROM alert_outbox
+                WHERE id = :outbox_id
+                """
+            ),
+            {"outbox_id": outbox_id},
+        ).one()
+
+    assert permanent_row.status == "permanent_failed"
+    assert permanent_row.attempt_count == 2
+    assert "bad webhook" in permanent_row.last_error
 
 
 def test_alert_ledger_recording_is_idempotent(postgres_engine):

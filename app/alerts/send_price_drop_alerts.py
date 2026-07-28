@@ -3,7 +3,6 @@ import json
 import requests
 from sqlalchemy import Engine, text
 
-from app.config import get_settings, require_setting
 from app.db import get_engine
 
 
@@ -72,8 +71,14 @@ def get_price_drop_events(engine: Engine | None = None):
            AND a.source = l.source
            AND a.source_listing_id = l.source_listing_id
            AND a.event_timestamp = l.current_snapshot
+        LEFT JOIN alert_outbox outbox
+            ON outbox.alert_type = 'price_drop'
+           AND outbox.source = l.source
+           AND outbox.source_listing_id = l.source_listing_id
+           AND outbox.event_timestamp = l.current_snapshot
         WHERE l.current_price < p.previous_price
           AND a.id IS NULL
+          AND outbox.id IS NULL
         ORDER BY price_change ASC, l.source_listing_id;
         """
     )
@@ -100,6 +105,64 @@ def format_slack_message(event):
 def send_to_slack(webhook_url: str, message_payload: dict):
     response = requests.post(webhook_url, json=message_payload, timeout=30)
     response.raise_for_status()
+
+
+def enqueue_price_drop_events(engine: Engine | None = None) -> int:
+    engine = engine or get_engine()
+    events = get_price_drop_events(engine)
+    if not events:
+        return 0
+
+    insert_sql = text(
+        """
+        INSERT INTO alert_outbox (
+            alert_type,
+            source,
+            source_listing_id,
+            event_timestamp,
+            payload_json
+        )
+        VALUES (
+            'price_drop',
+            :source,
+            :source_listing_id,
+            :event_timestamp,
+            CAST(:payload_json AS JSONB)
+        )
+        ON CONFLICT (
+            alert_type,
+            source,
+            source_listing_id,
+            event_timestamp
+        )
+        DO NOTHING
+        """
+    )
+    values = [
+        {
+            "source": event["source"],
+            "source_listing_id": event["source_listing_id"],
+            "event_timestamp": event["event_timestamp"],
+            "payload_json": json.dumps(
+                {
+                    "source": event["source"],
+                    "source_listing_id": event["source_listing_id"],
+                    "address": event["address"],
+                    "city": event["city"],
+                    "state": event["state"],
+                    "previous_price": str(event["previous_price"]),
+                    "current_price": str(event["current_price"]),
+                    "price_change": str(event["price_change"]),
+                    "price_change_pct": str(event["price_change_pct"]),
+                    "event_timestamp": event["event_timestamp"].isoformat(),
+                }
+            ),
+        }
+        for event in events
+    ]
+    with engine.begin() as conn:
+        result = conn.execute(insert_sql, values)
+    return max(result.rowcount, 0)
 
 
 def record_alert(event, engine: Engine | None = None) -> bool:
@@ -155,32 +218,3 @@ def record_alert(event, engine: Engine | None = None) -> bool:
             },
         )
     return result.rowcount == 1
-
-
-def main():
-    webhook_url = require_setting(
-        get_settings().slack_webhook_url,
-        "SLACK_WEBHOOK_URL",
-    )
-
-    events = get_price_drop_events()
-
-    if not events:
-        print("No new price drop alerts to send.")
-        return
-
-    for event in events:
-        message_payload = format_slack_message(event)
-        send_to_slack(webhook_url, message_payload)
-        record_alert(event)
-
-        print(
-            f"Sent alert for listing {event['source_listing_id']} "
-            f"at event time {event['event_timestamp']}"
-        )
-
-    print(f"Finished sending {len(events)} alert(s).")
-
-
-if __name__ == "__main__":
-    main()
