@@ -30,6 +30,36 @@ def generate_multi_signal_outlooks(
 ) -> list[MortgageRateOutlook]:
     engine = engine or get_engine()
     with engine.connect() as conn:
+        as_of_date = conn.scalar(
+            text(
+                """
+                SELECT MAX(observation_date)
+                FROM mortgage_rate_observations
+                WHERE source = :source
+                  AND product_type = :product_type
+                """
+            ),
+            {"source": PMMS_SOURCE, "product_type": product_type},
+        )
+    if as_of_date is None:
+        raise ValueError(f"No mortgage-rate observations for {product_type}")
+    return generate_multi_signal_outlooks_as_of(
+        as_of_date,
+        product_type=product_type,
+        engine=engine,
+        persist=True,
+    )
+
+
+def generate_multi_signal_outlooks_as_of(
+    as_of_date: date,
+    *,
+    product_type: str = "30_year_fixed",
+    engine: Engine | None = None,
+    persist: bool = False,
+) -> list[MortgageRateOutlook]:
+    engine = engine or get_engine()
+    with engine.connect() as conn:
         mortgage_rows = conn.execute(
             text(
                 """
@@ -37,17 +67,21 @@ def generate_multi_signal_outlooks(
                 FROM mortgage_rate_observations
                 WHERE source = :source
                   AND product_type = :product_type
+                  AND observation_date <= :as_of_date
                 ORDER BY observation_date DESC
                 LIMIT 53
                 """
             ),
-            {"source": PMMS_SOURCE, "product_type": product_type},
+            {
+                "source": PMMS_SOURCE,
+                "product_type": product_type,
+                "as_of_date": as_of_date,
+            },
         ).mappings().all()
         if not mortgage_rows:
             raise ValueError(f"No mortgage-rate observations for {product_type}")
-        as_of_date = mortgage_rows[0]["observation_date"]
-        signals = _load_signal_snapshot(conn, as_of_date)
-
+        actual_as_of_date = mortgage_rows[0]["observation_date"]
+        signals = _load_signal_snapshot(conn, actual_as_of_date)
     outlooks = [
         _combine_signals(
             generate_outlook(
@@ -59,7 +93,8 @@ def generate_multi_signal_outlooks(
         )
         for horizon in (1, 3)
     ]
-    _store_outlooks(outlooks, engine)
+    if persist:
+        _store_outlooks(outlooks, engine)
     return outlooks
 
 

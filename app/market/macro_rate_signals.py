@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import csv
 import io
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from urllib.parse import urljoin
 
 import pandas as pd
 import requests
@@ -18,6 +20,10 @@ from app.db import get_engine
 FRED_SOURCE = "fred"
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 NY_FED_SME_SOURCE = "new_york_fed_sme"
+SME_ARCHIVE_URL = (
+    "https://www.newyorkfed.org/markets/market-intelligence/"
+    "survey-of-market-expectations"
+)
 DEFAULT_SME_URL = (
     "https://www.newyorkfed.org/medialibrary/media/markets/survey/"
     "2026/jun-2026-data.xlsx"
@@ -206,6 +212,19 @@ def fetch_sme_workbook(url: str = DEFAULT_SME_URL) -> bytes:
     return response.content
 
 
+def fetch_sme_archive_urls(
+    archive_url: str = SME_ARCHIVE_URL,
+) -> list[str]:
+    response = requests.get(archive_url, timeout=30)
+    response.raise_for_status()
+    hrefs = re.findall(
+        r"""href=["']([^"']+-data\.xlsx)["']""",
+        response.text,
+        flags=re.IGNORECASE,
+    )
+    return sorted({urljoin(archive_url, href) for href in hrefs})
+
+
 def parse_sme_workbook(
     workbook_bytes: bytes,
     *,
@@ -231,6 +250,13 @@ def parse_sme_workbook(
         & (frame["aggregation"].isin(["pctl25", "pctl50", "pctl75", "count"]))
         & (frame["horizon_date"].notna())
     ].copy()
+    if selected.empty:
+        return []
+    first_horizon_date = min(
+        _as_date(value)
+        for value in selected["horizon_date"]
+    )
+    public_availability_date = first_horizon_date + timedelta(days=21)
     records = []
     grouped = selected.groupby(
         [
@@ -258,7 +284,10 @@ def parse_sme_workbook(
             records.append(
                 {
                     "source": NY_FED_SME_SOURCE,
-                    "release_date": _as_date(release_date),
+                    "release_date": max(
+                        _as_date(release_date),
+                        public_availability_date,
+                    ),
                     "panel_type": str(panel_type),
                     "subject": str(subject),
                     "value_tag": str(value_tag),
@@ -311,12 +340,12 @@ def load_sme_expectations(
                     )
                     ON CONFLICT (
                         source,
-                        release_date,
                         panel_type,
                         value_tag,
                         aggregation
                     )
                     DO UPDATE SET
+                        release_date = EXCLUDED.release_date,
                         horizon_date = EXCLUDED.horizon_date,
                         value_percent = EXCLUDED.value_percent,
                         respondent_count = EXCLUDED.respondent_count,
@@ -366,6 +395,29 @@ def load_current_macro_signals(
     return results
 
 
+def load_sme_archive(
+    *,
+    archive_url: str = SME_ARCHIVE_URL,
+    engine: Engine | None = None,
+) -> dict[str, int]:
+    engine = engine or get_engine()
+    totals = {
+        "workbooks": 0,
+        "received": 0,
+        "inserted_or_changed": 0,
+    }
+    for workbook_url in fetch_sme_archive_urls(archive_url):
+        counts = load_sme_expectations(
+            fetch_sme_workbook(workbook_url),
+            source_url=workbook_url,
+            engine=engine,
+        )
+        totals["workbooks"] += 1
+        totals["received"] += counts["received"]
+        totals["inserted_or_changed"] += counts["inserted_or_changed"]
+    return totals
+
+
 def _as_date(value: Any) -> date:
     if isinstance(value, datetime):
         return value.date()
@@ -379,6 +431,11 @@ def main() -> None:
         description="Load Treasury, inflation, and Fed-expectation signals.",
     )
     parser.add_argument("--sme-url", default=DEFAULT_SME_URL)
+    parser.add_argument(
+        "--sme-archive",
+        action="store_true",
+        help="Load every structured survey workbook linked by the archive.",
+    )
     args = parser.parse_args()
     results = load_current_macro_signals(sme_url=args.sme_url)
     for name, counts in results.items():
@@ -386,6 +443,14 @@ def main() -> None:
             f"{name}: {counts['received']} received, "
             f"{counts['inserted_or_changed']} inserted or changed, "
             f"{counts.get('expired_deleted', 0)} expired rows deleted."
+        )
+    if args.sme_archive:
+        archive_counts = load_sme_archive()
+        print(
+            "NY_FED_SME_ARCHIVE: "
+            f"{archive_counts['workbooks']} workbooks, "
+            f"{archive_counts['received']} observations received, "
+            f"{archive_counts['inserted_or_changed']} inserted or changed."
         )
 
 

@@ -439,7 +439,14 @@ Baseline implementation status:
   York Fed Survey of Market Expectations.
 - [x] Bound FRED storage to rolling three-year daily-rate windows and a rolling
   ten-year monthly CPI window.
-- [ ] Populate actual outcomes and calibration metrics after target dates pass.
+- [x] Add completed-outcome backtesting, chronological train/holdout splits,
+  Brier scores, and persisted calibration artifacts.
+- [x] Reject calibration automatically when it fails to improve on both the raw
+  model and a stable-rate holdout baseline.
+- [ ] Add point-in-time CPI and PMMS vintages to eliminate remaining revision
+  bias in historical tests.
+- [ ] Improve signal design until a later chronological holdout beats the
+  stable-rate baseline; do not deploy the current rejected calibration scales.
 
 ### Affordability scenarios
 

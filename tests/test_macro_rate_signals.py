@@ -1,4 +1,5 @@
 import io
+from datetime import date
 from decimal import Decimal
 
 import pandas as pd
@@ -78,3 +79,4 @@ def test_parse_sme_workbook_keeps_combined_fed_funds_percentiles():
     assert records[0]["aggregation"] == "pctl50"
     assert records[0]["value_percent"] == Decimal("3.6300")
     assert records[0]["respondent_count"] == 61
+    assert records[0]["release_date"] == date(2026, 8, 19)

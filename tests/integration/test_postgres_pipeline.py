@@ -29,6 +29,7 @@ from app.market.macro_rate_signals import (
     load_fred_series,
     load_sme_expectations,
 )
+from app.market.backtest_mortgage_rate_outlook import run_backtest
 from app.market.mortgage_rate_outlook import generate_and_store_outlooks
 from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
@@ -532,6 +533,7 @@ def test_multi_signal_outlook_uses_macro_and_fed_inputs(postgres_engine):
                 "aggregation_value": value,
             }
             for horizon in (
+                datetime(2026, 6, 17),
                 datetime(2026, 8, 31),
                 datetime(2026, 10, 31),
             )
@@ -562,6 +564,98 @@ def test_multi_signal_outlook_uses_macro_and_fed_inputs(postgres_engine):
         and item.input_snapshot["expected_fed_funds_rate"] is not None
         for item in outlooks
     )
+
+
+def test_mortgage_rate_backtest_uses_chronological_holdout(postgres_engine):
+    latest = datetime(2026, 7, 23)
+    pmms_rows = ["date,pmms30,pmms30p,pmms15,pmms15p"]
+    for week in range(160):
+        observation_date = latest - timedelta(weeks=week)
+        cycle = Decimal((week % 26) - 13) / 100
+        pmms_rows.append(
+            f"{observation_date.month}/{observation_date.day}/"
+            f"{observation_date.year},{Decimal('6.50') + cycle},,"
+            f"{Decimal('5.90') + cycle},"
+        )
+    load_pmms_csv("\n".join(pmms_rows), postgres_engine)
+
+    for series_id, base in (
+        ("DGS10", Decimal("4.40")),
+        ("DFF", Decimal("3.63")),
+    ):
+        lines = [f"observation_date,{series_id}"]
+        for day_offset in range(1096):
+            observation_date = latest - timedelta(days=day_offset)
+            cycle = Decimal((day_offset % 120) - 60) / 1000
+            lines.append(
+                f"{observation_date.date().isoformat()},{base + cycle}"
+            )
+        load_fred_series(series_id, "\n".join(lines), postgres_engine)
+
+    cpi_lines = ["observation_date,CPIAUCSL"]
+    for month_offset in range(48):
+        observation_date = (
+            latest.date() - relativedelta(months=month_offset)
+        ).replace(day=1)
+        cpi_lines.append(
+            f"{observation_date.isoformat()},"
+            f"{Decimal('325') - Decimal(month_offset) * Decimal('0.6')}"
+        )
+    load_fred_series("CPIAUCSL", "\n".join(cpi_lines), postgres_engine)
+
+    expectation_records = []
+    release_date = date(2023, 8, 1)
+    while release_date <= date(2026, 4, 1):
+        for months in (1, 3):
+            horizon = release_date + relativedelta(months=months)
+            tag = f"fftr_{release_date:%Y%m%d}_{horizon:%Y%m%d}"
+            expectation_records.extend(
+                [
+                    {
+                        "survey_release_date": release_date.isoformat(),
+                        "panel_type": "Combined",
+                        "subject": "fed_funds_target_range",
+                        "value_tag": tag,
+                        "horizon_date": horizon.isoformat(),
+                        "aggregation": "count",
+                        "aggregation_value": 50,
+                    },
+                    {
+                        "survey_release_date": release_date.isoformat(),
+                        "panel_type": "Combined",
+                        "subject": "fed_funds_target_range",
+                        "value_tag": tag,
+                        "horizon_date": horizon.isoformat(),
+                        "aggregation": "pctl50",
+                        "aggregation_value": 0.0363,
+                    },
+                ]
+            )
+        release_date += relativedelta(months=2)
+    workbook = io.BytesIO()
+    pd.DataFrame(expectation_records).to_excel(workbook, index=False)
+    load_sme_expectations(
+        workbook.getvalue(),
+        source_url="https://example.test/archive.xlsx",
+        engine=postgres_engine,
+    )
+
+    predictions, calibrations = run_backtest(engine=postgres_engine)
+
+    assert len(predictions) >= 40
+    assert {row.split for row in predictions} == {"training", "holdout"}
+    assert len(calibrations) == 2
+    assert all(result.training_count >= 20 for result in calibrations)
+    assert all(result.holdout_count >= 8 for result in calibrations)
+    assert all(result.approval_reason for result in calibrations)
+
+    with postgres_engine.connect() as conn:
+        assert conn.scalar(
+            text("SELECT COUNT(*) FROM mortgage_rate_backtest_runs")
+        ) == 1
+        assert conn.scalar(
+            text("SELECT COUNT(*) FROM mortgage_rate_calibrations")
+        ) == 2
 
 
 def test_saved_search_versioning_and_evaluation_are_idempotent(postgres_engine):

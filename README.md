@@ -315,6 +315,39 @@ passed to measure calibration. The model stores each source observation,
 selected expectation horizon, component strength, weight, and final combined
 strength.
 
+Load the historical structured survey archive and run the chronological
+backtest:
+
+```powershell
+python -m app.market.macro_rate_signals --sme-archive
+python -m app.market.backtest_mortgage_rate_outlook
+```
+
+The backtest samples forecast origins every four weeks, uses only observations
+dated on or before each origin, and reserves the latest 30% of completed
+outcomes as a chronological holdout. Calibration selects a strength multiplier
+using the earlier 70% only. It is approved only when the holdout sample is large
+enough and calibrated Brier score beats both the raw model and a stable-rate
+baseline.
+
+New York Fed expectation results are treated as available no earlier than 21
+days after the first associated FOMC meeting date. This avoids using the
+workbook's question-distribution date as though aggregated results were already
+public.
+
+The first live backtest did not approve calibration:
+
+- 1 month: scale `0.8`; raw holdout Brier `0.4958`; calibrated `0.4839`;
+  stable baseline `0.4482`
+- 3 months: scale `0.5`; raw holdout Brier `0.6226`; calibrated `0.5624`;
+  stable baseline `0.5204`
+
+Lower Brier score is better. Calibration improved the raw model but did not
+beat the simple baseline, so these scales are stored for analysis and are not
+used by live forecasts. CPI and PMMS are currently consolidated histories
+rather than point-in-time data vintages, so the result is not yet a fully
+vintage-correct research backtest.
+
 ## Saved searches
 
 Phase 2 saved searches are separate from market scoring. A listing must satisfy
