@@ -16,6 +16,11 @@ def test_skip_alerts_never_calls_slack_sender(monkeypatch):
     )
     monkeypatch.setattr(
         pipeline_module,
+        "score_listings_against_market",
+        lambda: calls.append("score"),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
         "evaluate_enabled_searches",
         lambda: calls.append("evaluate") or [],
     )
@@ -27,7 +32,7 @@ def test_skip_alerts_never_calls_slack_sender(monkeypatch):
 
     pipeline_module.run_pipeline(queue_alerts=False)
 
-    assert calls == ["load", "snapshot", "evaluate"]
+    assert calls == ["load", "snapshot", "score", "evaluate"]
 
 
 def test_saved_search_evaluation_can_be_skipped(monkeypatch):
@@ -45,6 +50,11 @@ def test_saved_search_evaluation_can_be_skipped(monkeypatch):
     )
     monkeypatch.setattr(
         pipeline_module,
+        "score_listings_against_market",
+        lambda: calls.append("score"),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
         "evaluate_enabled_searches",
         lambda: calls.append("evaluate") or [],
     )
@@ -59,7 +69,7 @@ def test_saved_search_evaluation_can_be_skipped(monkeypatch):
         evaluate_searches=False,
     )
 
-    assert calls == ["load", "snapshot"]
+    assert calls == ["load", "snapshot", "score"]
 
 
 def test_default_pipeline_queues_without_sending_slack(monkeypatch):
@@ -77,6 +87,11 @@ def test_default_pipeline_queues_without_sending_slack(monkeypatch):
     )
     monkeypatch.setattr(
         pipeline_module,
+        "score_listings_against_market",
+        lambda: calls.append("score"),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
         "evaluate_enabled_searches",
         lambda: calls.append("evaluate") or [],
     )
@@ -88,4 +103,4 @@ def test_default_pipeline_queues_without_sending_slack(monkeypatch):
 
     pipeline_module.run_pipeline()
 
-    assert calls == ["load", "snapshot", "evaluate", "queue"]
+    assert calls == ["load", "snapshot", "score", "evaluate", "queue"]

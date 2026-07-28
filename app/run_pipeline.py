@@ -6,6 +6,9 @@ from pathlib import Path
 from app.alerts.queue_price_drop_alerts import queue_price_drop_alerts
 from app.ingest.load_sample_listings import load_sample_csv
 from app.searches.service import evaluate_enabled_searches
+from app.transforms.score_listings_against_market import (
+    score_listings_against_market,
+)
 from app.transforms.snapshot_listings import snapshot_current_listings
 
 
@@ -27,8 +30,11 @@ def run_pipeline(
         print("Step 2: Snapshotting current listings...")
         snapshot_current_listings()
 
+        print("Step 3: Refreshing market scores...")
+        score_listings_against_market()
+
         if evaluate_searches:
-            print("Step 3: Evaluating enabled saved searches...")
+            print("Step 4: Evaluating enabled saved searches...")
             search_runs = evaluate_enabled_searches()
             print(
                 f"Evaluated {len(search_runs)} enabled saved search(es); "
@@ -36,14 +42,14 @@ def run_pipeline(
                 "new listing evaluation(s)."
             )
         else:
-            print("Step 3: Skipping saved-search evaluation.")
+            print("Step 4: Skipping saved-search evaluation.")
 
         if queue_alerts:
-            print("Step 4: Queueing price drop alerts...")
+            print("Step 5: Queueing price drop alerts...")
             queue_price_drop_alerts()
             print("Run the outbox worker separately to deliver queued alerts.")
         else:
-            print("Step 4: Skipping price-drop alert queueing.")
+            print("Step 5: Skipping price-drop alert queueing.")
 
         print("Pipeline completed successfully.")
 
