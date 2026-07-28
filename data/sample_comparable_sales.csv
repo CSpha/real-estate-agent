@@ -1,0 +1,4 @@
+source,source_sale_id,parcel_number,sale_date,sale_price,address,city,state,zip,county_name,property_type,beds,baths,sqft,lot_size_acres,year_built,latitude,longitude,arms_length
+sample_comps,wayne-2025-001,56-00100.000,2025-11-14,82000,118 Main St,Wooster,OH,44691,Wayne,Single Family,3,1.5,1280,0.18,1925,40.798100,-81.938200,true
+sample_comps,wayne-2026-002,56-00101.000,2026-01-30,89500,137 Main St,Wooster,OH,44691,Wayne,Single Family,3,2,1350,0.21,1930,40.798600,-81.937500,true
+sample_comps,wayne-2026-003,56-00102.000,2026-04-17,78000,205 Market St,Wooster,OH,44691,Wayne,Single Family,2,1,1120,0.16,1918,40.799200,-81.936900,true

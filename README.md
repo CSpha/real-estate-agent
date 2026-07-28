@@ -13,6 +13,7 @@ planned live-provider and saved-search phases.
 - One Alembic-managed PostgreSQL schema
 - Immutable raw JSON payload storage
 - Idempotent current-listing upserts
+- Auditable, idempotent property-level comparable-sale ingestion
 - History snapshots only when tracked listing data changes
 - Normalized listing statuses, property types, state values, ZIP codes, and dates
 - One authoritative county-market scoring implementation
@@ -207,6 +208,7 @@ python -m app.ingest.load_sample_listings
 python -m app.transforms.snapshot_listings
 python -m app.transforms.detect_price_changes
 python -m app.ingest.load_county_sales
+python -m app.ingest.load_comparable_sales
 python -m app.transforms.score_listings_against_market
 python -m app.alerts.queue_price_drop_alerts
 python -m app.alerts.process_alert_outbox
@@ -215,6 +217,52 @@ python -m app.alerts.send_potential_deal_alerts
 
 `load_county_sales` expects `data/county_sales.csv`. A `state` column is
 recommended. For backward compatibility, files without it default to Ohio.
+
+## Comparable sales
+
+Apply migrations and load the included sample:
+
+```powershell
+python -m app.ingest.load_comparable_sales
+```
+
+Pass another CSV path to load an actual authorized export:
+
+```powershell
+python -m app.ingest.load_comparable_sales data\my_comparable_sales.csv
+```
+
+Required columns are `source`, `source_sale_id`, `sale_date`, `sale_price`,
+`address`, `city`, `state`, `zip`, `property_type`, and `arms_length`. Optional
+columns are `parcel_number`, `county_name`, `beds`, `baths`, `sqft`,
+`lot_size_acres`, `year_built`, `latitude`, and `longitude`.
+
+Each distinct source payload is retained in `comparable_sales_raw` for audit
+history. `comparable_sales` contains the latest normalized version of each
+`(source, source_sale_id)` and only changes when normalized values change.
+The included rows are synthetic workflow fixtures, not appraisal evidence.
+
+Select comparables for a current listing with a fixed analysis date:
+
+```powershell
+python -m app.market.comparable_selection sample_feed 1001 `
+  --as-of-date 2026-07-27
+```
+
+Selection uses versioned, deterministic tiers:
+
+1. `strict_zip`: same property type and ZIP, sold within 12 months, within 20%
+   of square footage, one bed, one bath, and 50% of lot size when available.
+2. `broad_zip`: expands to 18 months, 30% square footage, 1.5 baths, and 100%
+   lot-size tolerance.
+3. `city_fallback`: expands to the same city and state, 24 months, 40% square
+   footage, two beds, and two baths.
+
+Only arm's-length sales are eligible. Exact subject-address matches are
+excluded. The selector stops at the first tier containing the requested
+minimum number of comps, then ranks by physical similarity, recency, and stable
+source identifiers. Its output includes every attempted tier and criteria that
+could not be applied because subject data was unavailable.
 
 ## Market scoring
 

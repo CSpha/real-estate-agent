@@ -7,3 +7,4 @@ __pycache__/
 data/*
 !data/.gitkeep
 !data/sample_listings.csv
+!data/sample_comparable_sales.csv

@@ -14,6 +14,10 @@ saved searches are implemented in commit `17cee39`. Both commits are pushed to
 
 - One authoritative Alembic-managed PostgreSQL schema
 - Immutable raw JSON payloads and normalized current listings
+- An auditable, idempotent property-level comparable-sales schema and CSV
+  importer, ready for an authorized source export
+- Versioned deterministic comparable selection with visible ZIP-to-city
+  fallback tiers
 - Idempotent sample ingestion and change-aware listing history
 - One authoritative county-level market scoring implementation
 - Slack alerts for price drops and potential deals
@@ -299,8 +303,10 @@ Important stable identifiers:
 ## Scoring recommendations
 
 The current county-median score remains implemented as coarse market context.
-The proposed Deal Score v2 below is planned work and must not replace the
-current score until its inputs, migration, tests, and backfill are complete.
+The property-level comparable-sales schema, CSV importer, and deterministic
+selection tiers are implemented. Comparable valuation, scoring, and backfill
+remain planned. Deal Score v2 must not replace the current score until those
+remaining inputs and tests are complete.
 
 ### Proposed Deal Score v2
 

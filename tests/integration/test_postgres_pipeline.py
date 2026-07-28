@@ -24,12 +24,14 @@ from app.alerts.send_price_drop_alerts import (
     record_alert,
 )
 from app.alerts.outbox import deliver_pending_alerts
+from app.ingest.load_comparable_sales import load_comparable_sales
 from app.ingest.load_sample_listings import load_sample_csv
 from app.market.macro_rate_signals import (
     load_fred_series,
     load_sme_expectations,
 )
 from app.market.backtest_mortgage_rate_outlook import run_backtest
+from app.market.comparable_selection import select_comparables
 from app.market.mortgage_rate_outlook import generate_and_store_outlooks
 from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
@@ -129,6 +131,110 @@ def test_sample_ingestion_and_history_are_idempotent(postgres_engine):
         ).one()
         assert normalized.status == "Active"
         assert normalized.property_type == "SingleFamilyResidence"
+
+
+def test_comparable_sales_ingestion_is_idempotent(postgres_engine):
+    sample_path = PROJECT_ROOT / "data" / "sample_comparable_sales.csv"
+
+    first_load = load_comparable_sales(sample_path, postgres_engine)
+    second_load = load_comparable_sales(sample_path, postgres_engine)
+
+    assert first_load == {
+        "received": 3,
+        "raw_inserted": 3,
+        "current_changed": 3,
+    }
+    assert second_load == {
+        "received": 3,
+        "raw_inserted": 0,
+        "current_changed": 0,
+    }
+
+    with postgres_engine.connect() as conn:
+        assert conn.scalar(text("SELECT COUNT(*) FROM comparable_sales_raw")) == 3
+        assert conn.scalar(text("SELECT COUNT(*) FROM comparable_sales")) == 3
+        normalized = conn.execute(
+            text(
+                """
+                SELECT state, zip, property_type, arms_length
+                FROM comparable_sales
+                WHERE source_sale_id = 'wayne-2026-002'
+                """
+            )
+        ).one()
+        assert normalized.state == "OH"
+        assert normalized.zip == "44691"
+        assert normalized.property_type == "SingleFamilyResidence"
+        assert normalized.arms_length is True
+
+
+def test_comparable_selection_is_deterministic_and_exposes_fallback(
+    postgres_engine,
+):
+    strict_result = select_comparables(
+        "sample_feed",
+        "1001",
+        as_of_date=date(2026, 7, 27),
+        engine=postgres_engine,
+    )
+    repeated_result = select_comparables(
+        "sample_feed",
+        "1001",
+        as_of_date=date(2026, 7, 27),
+        engine=postgres_engine,
+    )
+
+    assert strict_result == repeated_result
+    assert strict_result["selected_tier"]["key"] == "strict_zip"
+    assert strict_result["meets_minimum"] is True
+    assert strict_result["available_comparable_count"] == 3
+    assert strict_result["returned_comparable_count"] == 3
+    assert strict_result["attempted_tiers"] == [
+        {"tier": "strict_zip", "candidate_count": 3}
+    ]
+    assert "lot_size_acres" in strict_result["criteria_not_applied"]
+    assert "year_built" in strict_result["criteria_not_applied"]
+    assert all(
+        comparable["property_type"] == "SingleFamilyResidence"
+        for comparable in strict_result["comparables"]
+    )
+
+    try:
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE comparable_sales
+                    SET zip = '44690'
+                    WHERE source_sale_id = 'wayne-2026-003'
+                    """
+                )
+            )
+
+        fallback_result = select_comparables(
+            "sample_feed",
+            "1001",
+            as_of_date=date(2026, 7, 27),
+            engine=postgres_engine,
+        )
+        assert fallback_result["selected_tier"]["key"] == "city_fallback"
+        assert fallback_result["attempted_tiers"] == [
+            {"tier": "strict_zip", "candidate_count": 2},
+            {"tier": "broad_zip", "candidate_count": 2},
+            {"tier": "city_fallback", "candidate_count": 3},
+        ]
+        assert fallback_result["meets_minimum"] is True
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    UPDATE comparable_sales
+                    SET zip = '44691'
+                    WHERE source_sale_id = 'wayne-2026-003'
+                    """
+                )
+            )
 
 
 def test_material_price_change_creates_one_event(postgres_engine):

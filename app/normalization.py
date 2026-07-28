@@ -115,6 +115,21 @@ def normalize_integer(value: Any) -> int | None:
     return int(value)
 
 
+def normalize_boolean(value: Any) -> bool | None:
+    value = none_if_missing(value)
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().casefold()
+    if normalized in {"true", "t", "yes", "y", "1"}:
+        return True
+    if normalized in {"false", "f", "no", "n", "0"}:
+        return False
+    raise ValueError(f"Expected a boolean value, got: {value!r}")
+
+
 def normalize_listing(record: dict[str, Any]) -> dict[str, Any]:
     source = str(record.get("source", "")).strip()
     source_listing_id = str(record.get("source_listing_id", "")).strip()
