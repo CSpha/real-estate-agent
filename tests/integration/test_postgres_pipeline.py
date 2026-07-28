@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-import os
+import io
 import json
-from datetime import datetime, timezone
+import os
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 import requests
+import pandas as pd
 from alembic import command
 from alembic.config import Config
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
 
@@ -21,6 +25,15 @@ from app.alerts.send_price_drop_alerts import (
 )
 from app.alerts.outbox import deliver_pending_alerts
 from app.ingest.load_sample_listings import load_sample_csv
+from app.market.macro_rate_signals import (
+    load_fred_series,
+    load_sme_expectations,
+)
+from app.market.mortgage_rate_outlook import generate_and_store_outlooks
+from app.market.mortgage_rate_outlook_v2 import (
+    generate_multi_signal_outlooks,
+)
+from app.market.mortgage_rates import get_rate_trend, load_pmms_csv
 from app.searches.models import (
     SavedSearchCreate,
     SavedSearchUpdate,
@@ -379,6 +392,176 @@ def test_market_scoring_changes_only_when_inputs_change(postgres_engine):
 
     assert second_scored_at == first_scored_at
     assert potential_deal_count == 2
+
+
+def test_mortgage_rate_history_is_idempotent(postgres_engine):
+    csv_text = """date,pmms30,pmms30p,pmms15,pmms15p
+6/25/2026,6.50,,5.75,
+7/2/2026,6.43,,5.79,
+7/9/2026,6.49,,5.82,
+7/16/2026,6.55,,5.93,
+7/23/2026,6.58,,5.96,
+"""
+
+    first_load = load_pmms_csv(csv_text, postgres_engine)
+    second_load = load_pmms_csv(csv_text, postgres_engine)
+    trend = get_rate_trend("30_year_fixed", postgres_engine)
+
+    assert first_load == {"received": 10, "inserted_or_changed": 10}
+    assert second_load == {"received": 10, "inserted_or_changed": 0}
+    assert trend.current_rate == Decimal("6.58")
+    assert trend.change_4_weeks == Decimal("0.08")
+    assert trend.direction == "roughly_stable"
+
+
+def test_mortgage_rate_outlooks_are_versioned_and_idempotent(postgres_engine):
+    latest = datetime(2026, 7, 23)
+    history_rows = ["date,pmms30,pmms30p,pmms15,pmms15p"]
+    for week in range(53):
+        observation_date = latest - timedelta(weeks=week)
+        history_rows.append(
+            f"{observation_date.month}/{observation_date.day}/"
+            f"{observation_date.year},"
+            f"{Decimal('6.58') - Decimal(week) / 100},,"
+            f"{Decimal('5.96') - Decimal(week) / 100},"
+        )
+    load_pmms_csv("\n".join(history_rows), postgres_engine)
+
+    first = generate_and_store_outlooks(engine=postgres_engine)
+    second = generate_and_store_outlooks(engine=postgres_engine)
+
+    assert len(first) == 2
+    assert first == second
+    assert {outlook.horizon_months for outlook in first} == {1, 3}
+    assert all(
+        outlook.probability_lower
+        + outlook.probability_stable
+        + outlook.probability_higher
+        == Decimal("1")
+        for outlook in first
+    )
+
+    with postgres_engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                    horizon_months,
+                    model_version,
+                    input_snapshot,
+                    drivers
+                FROM mortgage_rate_outlooks
+                WHERE product_type = '30_year_fixed'
+                ORDER BY horizon_months
+                """
+            )
+        ).all()
+
+    assert len(rows) == 2
+    assert all(row.model_version == "pmms_momentum_v1" for row in rows)
+    assert all(
+        Decimal(row.input_snapshot["current_rate"]) == Decimal("6.58")
+        for row in rows
+    )
+    assert all(row.drivers for row in rows)
+
+
+def test_fred_loader_enforces_rolling_retention(postgres_engine):
+    counts = load_fred_series(
+        "DGS2",
+        """observation_date,DGS2
+2022-07-22,3.00
+2023-07-23,4.00
+2026-07-23,4.37
+""",
+        postgres_engine,
+    )
+
+    with postgres_engine.connect() as conn:
+        dates = conn.scalars(
+            text(
+                """
+                SELECT observation_date
+                FROM macro_rate_observations
+                WHERE series_id = 'DGS2'
+                ORDER BY observation_date
+                """
+            )
+        ).all()
+
+    assert counts == {
+        "received": 2,
+        "inserted_or_changed": 2,
+        "expired_deleted": 0,
+    }
+    assert dates == [date(2023, 7, 23), date(2026, 7, 23)]
+
+
+def test_multi_signal_outlook_uses_macro_and_fed_inputs(postgres_engine):
+    latest = datetime(2026, 7, 23)
+    for series_id, start_value, count in (
+        ("DGS2", Decimal("4.37"), 70),
+        ("DGS10", Decimal("4.45"), 70),
+        ("DFF", Decimal("3.63"), 5),
+    ):
+        lines = [f"observation_date,{series_id}"]
+        for day_offset in range(count):
+            observation_date = latest - timedelta(days=day_offset)
+            value = start_value - Decimal(day_offset) / 1000
+            lines.append(f"{observation_date.date().isoformat()},{value}")
+        load_fred_series(series_id, "\n".join(lines), postgres_engine)
+
+    cpi_lines = ["observation_date,CPIAUCSL"]
+    for month_offset in range(16):
+        observation_date = (
+            latest.date() - relativedelta(months=month_offset)
+        ).replace(day=1)
+        value = Decimal("325") - Decimal(month_offset) / 2
+        cpi_lines.append(f"{observation_date.isoformat()},{value}")
+    load_fred_series("CPIAUCSL", "\n".join(cpi_lines), postgres_engine)
+
+    expectation_frame = pd.DataFrame(
+        [
+            {
+                "survey_release_date": "2026-06-03",
+                "panel_type": "Combined",
+                "subject": "fed_funds_target_range",
+                "value_tag": f"fftr_pathofmodes_{horizon:%Y%m%d}",
+                "horizon_date": horizon.date().isoformat(),
+                "aggregation": aggregation,
+                "aggregation_value": value,
+            }
+            for horizon in (
+                datetime(2026, 8, 31),
+                datetime(2026, 10, 31),
+            )
+            for aggregation, value in (
+                ("count", 61),
+                ("pctl25", 0.0350),
+                ("pctl50", 0.0363),
+                ("pctl75", 0.0375),
+            )
+        ]
+    )
+    workbook = io.BytesIO()
+    expectation_frame.to_excel(workbook, index=False)
+    load_sme_expectations(
+        workbook.getvalue(),
+        source_url="https://example.test/sme.xlsx",
+        engine=postgres_engine,
+    )
+
+    outlooks = generate_multi_signal_outlooks(engine=postgres_engine)
+
+    assert len(outlooks) == 2
+    assert all(item.model_version == "multi_signal_v2" for item in outlooks)
+    assert all(item.confidence == "medium" for item in outlooks)
+    assert all(
+        item.input_snapshot["treasury_10y_change"] is not None
+        and item.input_snapshot["inflation_yoy_change_3_months"] is not None
+        and item.input_snapshot["expected_fed_funds_rate"] is not None
+        for item in outlooks
+    )
 
 
 def test_saved_search_versioning_and_evaluation_are_idempotent(postgres_engine):

@@ -39,8 +39,8 @@ documentation issues are resolved. Remaining work includes:
 2. An existing prototype database is not automatically reconciled with the new
    clean Alembic baseline. Existing data must be exported and inspected before
    rebuilding or writing a one-time migration.
-3. The main pipeline does not run county data loading, market scoring, or
-   potential-deal Slack alerts.
+3. The main pipeline refreshes market scores but does not load county data or
+   queue potential-deal alerts.
 4. The legacy `potential_deals` score threshold remains hard-coded, although
    saved-search criteria are now configurable.
 5. Geographic bounding-box criteria are deferred until a listing provider
@@ -298,20 +298,174 @@ Important stable identifiers:
 
 ## Scoring recommendations
 
-County median price should remain contextual information rather than the sole definition of a deal. Improve ranking by comparing similar properties using available fields such as:
+The current county-median score remains implemented as coarse market context.
+The proposed Deal Score v2 below is planned work and must not replace the
+current score until its inputs, migration, tests, and backfill are complete.
 
-- Property type
-- ZIP, city, or smaller market area
-- Beds and baths
-- Square-foot band
-- Acreage
-- Age/year built
-- Listing status
-- Days on market
-- Price per square foot
-- Recent comparable sale period
+### Proposed Deal Score v2
 
-Keep the score explainable. Store each component and its contribution instead of only a final number.
+Use a transparent 100-point score:
+
+- 40 points: discount to an estimated comparable value
+- 20 points: price per square foot relative to similar local properties
+- 15 points: listing opportunity, including cumulative price reductions and
+  reduction frequency
+- 10 points: days on market relative to the local median
+- 10 points: local price trend or market momentum
+- 5 points: data confidence and comparable-sample quality
+
+County median sale price should contribute contextual information but should
+not independently define a deal.
+
+### Comparable selection
+
+Prefer recent sold properties with:
+
+- The same property type
+- The same ZIP or Census tract when sample size permits
+- Similar beds and baths
+- A bounded square-foot range
+- Similar lot size
+- Similar age or year-built range
+- A documented maximum sale age
+
+Widen geography or similarity bands only when the initial comparable set is too
+small. Record which fallback level was used.
+
+### Separate subscores
+
+Do not hide every investment concern inside one number. Store and expose:
+
+- `deal_score`: purchase price relative to supported market value
+- `rental_score`: rent yield, operating costs, and estimated cash flow
+- `market_momentum_score`: price trend, inventory, and market velocity
+- `risk_score`: hazard, insurance, tax, condition, and data risks
+- `confidence_score`: comparable count, recency, similarity, and missing data
+
+The initial Deal Score v2 implementation should not require rental or risk data;
+those subscores can remain unavailable until reliable sources are connected.
+
+### Explainability and safeguards
+
+Persist each input, normalized component score, weight, contribution, final
+score, scoring version, and human-readable reason. Missing data must reduce
+confidence rather than silently receiving a favorable score.
+
+Do not use protected-class data or demographic proxies to value or rank
+properties. Test scoring results for geographic bias before using the score in
+consumer-facing or credit-related decisions.
+
+### Acceptance criteria
+
+- Re-running unchanged inputs produces the same score and timestamp.
+- A listing is never compared across incompatible property types.
+- Comparable fallback behavior is deterministic and visible.
+- Missing or sparse comparable data produces a lower confidence score.
+- Every final score can be reconstructed from persisted component values.
+- Score weights and thresholds are versioned.
+- Tests cover boundary values, missing data, outliers, and small comparable
+  samples.
+
+## Mortgage-rate intelligence
+
+Add financing context alongside Deal Score v2. Mortgage-rate information should
+remain a separate, timestamped analysis rather than being hidden inside the
+property deal score because an individual borrower's actual rate depends on
+credit, loan structure, down payment, points, lender, and location.
+
+### Rate data
+
+Store:
+
+- Current national average 30-year and 15-year fixed mortgage rates
+- Weekly historical observations
+- Observation date, publication date, source, product type, and methodology
+  version
+- Changes over 1, 4, 13, 26, and 52 weeks
+- Rolling averages, recent range, volatility, and distance from recent highs
+  and lows
+
+Use Freddie Mac's Primary Mortgage Market Survey as the initial authoritative
+mortgage-rate source. Its downloadable history extends back to 1971. Preserve
+source attribution and account for documented methodology changes when
+comparing long periods.
+
+### Market drivers and sentiment
+
+Track explanatory indicators separately from observed mortgage rates:
+
+- Federal funds target range and recent FOMC decisions
+- FOMC Summary of Economic Projections
+- New York Fed Survey of Market Expectations
+- Treasury yields, especially the 2-year and 10-year
+- Inflation measures and recent inflation trend
+- Employment and unemployment releases
+- Mortgage-rate spread to the 10-year Treasury
+- Mortgage-backed-securities indicators when a licensed, reliable source is
+  available
+
+Prefer structured surveys and market-implied measures over unsourced news
+sentiment. If narrative news analysis is added later, retain source links,
+publication timestamps, extracted claims, and model/version provenance.
+
+### One-to-three-month directional outlook
+
+Produce separate 1-month and 3-month outlooks with:
+
+- Probabilities that mortgage rates will be `lower`, `roughly_stable`, or
+  `higher`
+- A defined stable band, initially within 0.25 percentage points
+- Confidence level and data-freshness status
+- Primary upward and downward drivers
+- Forecast creation time, target date, input snapshot, and model version
+- Subsequent actual outcome for backtesting
+
+Begin with a transparent rules-based model using recent mortgage-rate momentum,
+Treasury-yield momentum, inflation trend, and structured policy expectations.
+Do not present the result as certainty or personalized financial advice.
+
+Baseline implementation status:
+
+- [x] Add versioned 1-month and 3-month `lower`, `roughly_stable`, and `higher`
+  probabilities using PMMS momentum and recent volatility.
+- [x] Persist the input snapshot, explanatory drivers, target date, confidence,
+  and model version for reproducibility and later backtesting.
+- [x] Cap confidence because the baseline does not yet include explanatory
+  market signals.
+- [x] Add 2-year and 10-year Treasury histories and use 10-year yield momentum
+  in `multi_signal_v2`.
+- [x] Add CPI history and the recent change in year-over-year inflation.
+- [x] Add structured combined-panel federal-funds expectations from the New
+  York Fed Survey of Market Expectations.
+- [x] Bound FRED storage to rolling three-year daily-rate windows and a rolling
+  ten-year monthly CPI window.
+- [ ] Populate actual outcomes and calibration metrics after target dates pass.
+
+### Affordability scenarios
+
+For each listing, show estimated principal-and-interest payments at:
+
+- The current benchmark mortgage rate
+- Current rate minus 0.50 percentage points
+- Current rate plus 0.50 percentage points
+
+Make loan amount, down payment, term, taxes, insurance, HOA, and other cost
+assumptions explicit. Keep these scenarios separate from lender quotes and
+borrower-specific qualification.
+
+### Acceptance criteria
+
+- Rate ingestion is idempotent and retains immutable historical observations.
+- Every displayed rate and outlook includes an as-of time and source.
+- Trend calculations cannot mix incompatible products or methodologies without
+  an explicit adjustment or warning.
+- Outlook probabilities sum to 100 percent and are reproducible from a stored
+  input snapshot.
+- Forecast accuracy and calibration are measured by horizon and model version.
+- Stale or missing upstream data lowers confidence and is visible to users.
+- Affordability calculations have boundary tests and match independently
+  verified amortization examples.
+- No forecast language implies guaranteed rate direction.
 
 ## Validation strategy
 
@@ -354,3 +508,11 @@ The test suite should eventually include:
 - Slack incoming webhooks: https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks
 - Slack rate limits: https://docs.slack.dev/apis/web-api/rate-limits/
 - Docker Compose startup/readiness guidance: https://docs.docker.com/compose/how-tos/startup-order/
+- Freddie Mac Primary Mortgage Market Survey:
+  https://www.freddiemac.com/pmms
+- Freddie Mac PMMS historical archive:
+  https://www.freddiemac.com/pmms/pmms_archives
+- Federal Reserve Summary of Economic Projections:
+  https://www.federalreserve.gov/faqs/summary-economic-projections-sep.htm
+- New York Fed Survey of Market Expectations:
+  https://www.newyorkfed.org/markets/market-intelligence/survey-of-market-expectations

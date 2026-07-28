@@ -154,8 +154,9 @@ That command:
 2. Stores previously unseen raw payloads
 3. Upserts changed current listings
 4. Adds history only for listings whose tracked state changed
-5. Evaluates enabled saved searches and stores only new listing/search states
-6. Does not send Slack messages
+5. Refreshes market scores from the latest available county sales data
+6. Evaluates enabled saved searches using those refreshed scores
+7. Does not queue or send Slack messages
 
 To load, snapshot, evaluate searches, and queue price-drop events:
 
@@ -231,6 +232,88 @@ The `potential_deals` view selects scores of 80 or higher.
 This score is only coarse market context. It is not an appraisal or a robust
 comparable-sale analysis. Saved-search matching is implemented separately from
 deal ranking.
+
+## Mortgage rates
+
+Apply migrations, then load the official Freddie Mac Primary Mortgage Market
+Survey history:
+
+```powershell
+python -m app.market.mortgage_rates
+```
+
+For reproducible or offline loading, download the official consolidated CSV and
+provide it explicitly:
+
+```powershell
+python -m app.market.mortgage_rates --file data\PMMS_history.csv
+```
+
+The importer currently stores the 30-year and 15-year fixed-rate series. Loads
+are idempotent by source, product, and observation date. Each observation keeps
+its source URL and is tagged as either the legacy lender-survey methodology or
+the application-based methodology introduced on November 17, 2022.
+
+Trend calculations report the latest rate, 4/13/52-week changes, four-week
+average, observation count, and a deterministic recent direction. This trend is
+historical context.
+
+Generate and persist versioned 1- and 3-month directional outlooks:
+
+```powershell
+python -m app.market.mortgage_rate_outlook
+python -m app.market.mortgage_rate_outlook --product 15_year_fixed
+```
+
+The `pmms_momentum_v1` model reports probabilities for rates being lower,
+roughly stable, or higher, where stable means within 0.25 percentage points.
+It stores its input snapshot and explanatory drivers so forecasts can be
+reproduced and backtested.
+
+Version 1 uses only recent PMMS momentum and volatility, so confidence is capped
+at medium and may be low with sparse or volatile data. It is a transparent
+baseline, not a validated forecast, lender quote, or personalized financial
+recommendation. Treasury, inflation, and policy-expectation signals remain
+available through the version 2 workflow.
+
+Load the current multi-signal inputs:
+
+```powershell
+python -m app.market.macro_rate_signals
+```
+
+This imports the FRED `DGS2`, `DGS10`, `DFF`, and `CPIAUCSL` series plus
+combined-panel federal-funds expectations from the New York Fed Survey of
+Market Expectations. When a newer survey workbook is released, supply it with:
+
+```powershell
+python -m app.market.macro_rate_signals --sme-url <official-xlsx-url>
+```
+
+FRED retention is intentionally bounded: Treasury yields and the effective
+federal funds rate keep a rolling three years of daily observations, while CPI
+keeps ten years of monthly observations. The loader requests only those
+windows and deletes older rows for each series. New York Fed survey releases
+remain retained because the structured history is small and useful for
+forecast backtesting.
+
+Generate the version 2 outlook:
+
+```powershell
+python -m app.market.mortgage_rate_outlook_v2
+python -m app.market.mortgage_rate_outlook_v2 --product 15_year_fixed
+```
+
+`multi_signal_v2` weights mortgage-rate momentum at 40%, 10-year Treasury
+momentum at 30%, the change in year-over-year CPI inflation at 15%, and the
+nearest combined-panel federal-funds expectation at 15%. The 2-year Treasury is
+stored for analysis but is not yet weighted. Missing signals are neutral rather
+than favorable and lower forecast confidence.
+
+Version 2 confidence remains capped at medium until enough target dates have
+passed to measure calibration. The model stores each source observation,
+selected expectation horizon, component strength, weight, and final combined
+strength.
 
 ## Saved searches
 

@@ -1,0 +1,1 @@
+"""Market and financing context."""
