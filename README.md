@@ -264,6 +264,26 @@ minimum number of comps, then ranks by physical similarity, recency, and stable
 source identifiers. Its output includes every attempted tier and criteria that
 could not be applied because subject data was unavailable.
 
+Estimate a supported value from the selected comps:
+
+```powershell
+python -m app.market.comparable_valuation sample_feed 1001 `
+  --as-of-date 2026-07-27
+```
+
+Valuation v1 calculates each comparable's price per square foot and implied
+subject value, then uses a similarity- and recency-weighted median. Sales more
+than 35% away from the unweighted median price per square foot are marked as
+outliers. They are excluded only when at least three ordinary sales remain, so
+outlier removal cannot manufacture an undersized sample.
+
+The valuation includes a low/high range, the listing's discount or premium to
+the estimate, and a transparent confidence score. Confidence combines sample
+size, geographic fallback, recency, physical similarity, subject-data
+completeness, and comparable price dispersion. This is a screening estimate,
+not an appraisal; condition, renovations, taxes, and micro-location are not yet
+adjusted.
+
 ## Market scoring
 
 There is one Phase 1 scoring definition:

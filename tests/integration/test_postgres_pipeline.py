@@ -32,6 +32,7 @@ from app.market.macro_rate_signals import (
 )
 from app.market.backtest_mortgage_rate_outlook import run_backtest
 from app.market.comparable_selection import select_comparables
+from app.market.comparable_valuation import value_listing
 from app.market.mortgage_rate_outlook import generate_and_store_outlooks
 from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
@@ -235,6 +236,39 @@ def test_comparable_selection_is_deterministic_and_exposes_fallback(
                     """
                 )
             )
+
+
+def test_comparable_valuation_is_explainable(postgres_engine):
+    result = value_listing(
+        "sample_feed",
+        "1001",
+        as_of_date=date(2026, 7, 27),
+        engine=postgres_engine,
+    )
+
+    assert result["status"] == "valued"
+    assert result["valuation_version"] == "comparable-valuation-v1"
+    assert result["selected_tier"] == "strict_zip"
+    assert result["included_comparable_count"] == 3
+    assert result["weighted_median_price_per_sqft"] == Decimal("66.30")
+    assert result["estimated_value"] == Decimal("82207.41")
+    assert result["estimated_value_low"] == Decimal("79437.50")
+    assert result["estimated_value_high"] == Decimal("86357.14")
+    assert result["list_price_discount_amount"] == Decimal("3707.41")
+    assert result["list_price_discount_pct"] == Decimal("0.0451")
+    assert result["confidence_label"] == "medium"
+    assert set(result["confidence_components"]) == {
+        "sample_size_points",
+        "geography_points",
+        "recency_points",
+        "similarity_points",
+        "completeness_points",
+        "dispersion_penalty",
+    }
+    assert all(
+        comparable["included_in_valuation"]
+        for comparable in result["comparables"]
+    )
 
 
 def test_material_price_change_creates_one_event(postgres_engine):

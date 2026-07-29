@@ -18,6 +18,8 @@ saved searches are implemented in commit `17cee39`. Both commits are pushed to
   importer, ready for an authorized source export
 - Versioned deterministic comparable selection with visible ZIP-to-city
   fallback tiers
+- Explainable comparable valuation using robust weighted-median price per
+  square foot, outlier safeguards, value ranges, and confidence components
 - Idempotent sample ingestion and change-aware listing history
 - One authoritative county-level market scoring implementation
 - Slack alerts for price drops and potential deals
@@ -303,10 +305,11 @@ Important stable identifiers:
 ## Scoring recommendations
 
 The current county-median score remains implemented as coarse market context.
-The property-level comparable-sales schema, CSV importer, and deterministic
-selection tiers are implemented. Comparable valuation, scoring, and backfill
-remain planned. Deal Score v2 must not replace the current score until those
-remaining inputs and tests are complete.
+The property-level comparable-sales schema, CSV importer, deterministic
+selection tiers, and comparable valuation with confidence scoring are
+implemented. Deal scoring, persistence, and backfill remain planned. Deal
+Score v2 must not replace the current score until those remaining inputs and
+tests are complete.
 
 ### Proposed Deal Score v2
 
