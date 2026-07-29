@@ -1,21 +1,17 @@
-from __future__ import annotations
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-from functools import lru_cache
-
-from sqlalchemy import Engine, create_engine
-
-from app.config import get_settings
+from app.utils.db import get_db_config
 
 
-@lru_cache(maxsize=1)
-def get_engine() -> Engine:
-    return create_engine(
-        get_settings().sqlalchemy_database_url,
-        pool_pre_ping=True,
+def get_connection():
+    config = get_db_config()
+
+    return psycopg2.connect(
+        host=config["host"],
+        port=config["port"],
+        dbname=config["dbname"],
+        user=config["user"],
+        password=config["password"],
+        cursor_factory=RealDictCursor,
     )
-
-
-def dispose_engine() -> None:
-    if get_engine.cache_info().currsize:
-        get_engine().dispose()
-        get_engine.cache_clear()

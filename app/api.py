@@ -1,40 +1,62 @@
-from __future__ import annotations
-
 import json
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from app.db import get_connection
 
-from app.db import get_engine
-from app.searches.router import router as saved_searches_router
-from app.transforms.score_listings_against_market import (
-    score_listings_against_market,
-)
+from app.utils.db import get_engine
+from app.analyst import create_analysis
 
 
 app = FastAPI(title="Real Estate Agent API")
-app.include_router(saved_searches_router)
+
+@app.get("/")
+def root():
+    return {"message": "Real Estate Agent API is running"}
 
 
-class MarketScoreResult(BaseModel):
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+
+class Listing(BaseModel):
     source: str
     source_listing_id: str
-    address: str | None
-    city: str | None
-    state: str | None
-    county_name: str | None
-    list_price: float | None
-    county_median_sale_price: float | None
-    price_vs_county_median: float | None
-    pct_below_or_above_median: float | None
+    address: Optional[str]
+    city: Optional[str]
+    state: Optional[str]
+    zip: Optional[str]
+    list_price: Optional[float]
+    beds: Optional[float]
+    baths: Optional[float]
+    sqft: Optional[float]
+    property_type: Optional[str]
+    status: Optional[str]
+    days_on_market: Optional[int]
+    first_seen_date: Optional[date]
+    last_seen_date: Optional[date]
+    price_per_sqft: Optional[float]
+
+
+class ScoreResult(BaseModel):
+    source: str
+    source_listing_id: str
+    address: Optional[str]
+    city: Optional[str]
+    state: Optional[str]
+    current_price: Optional[float]
+    previous_price: Optional[float]
+    price_change: Optional[float]
+    price_change_pct: Optional[float]
+    days_on_market: Optional[int]
+    price_per_sqft: Optional[float]
     market_score: int
     score_reason: str
-    scored_at: datetime
 
 
 class AlertRecord(BaseModel):
@@ -43,8 +65,19 @@ class AlertRecord(BaseModel):
     source: str
     source_listing_id: str
     event_timestamp: datetime
-    payload: dict[str, Any]
+    payload: Dict[str, Any]
     sent_at: datetime
+
+
+class AnalysisRequest(BaseModel):
+    model: Optional[str] = None
+
+
+class AnalysisReviewRequest(BaseModel):
+    decision: Literal["approved", "rejected", "corrected"]
+    reviewer: Optional[str] = None
+    notes: Optional[str] = None
+    corrections: Optional[Dict[str, Any]] = None
 
 
 def serialize_value(value: Any) -> Any:
@@ -55,7 +88,7 @@ def serialize_value(value: Any) -> Any:
     return value
 
 
-def row_to_dict(row: Any) -> dict[str, Any]:
+def row_to_dict(row) -> Dict[str, Any]:
     if hasattr(row, "_mapping"):
         items = row._mapping.items()
     elif hasattr(row, "items"):
@@ -65,96 +98,147 @@ def row_to_dict(row: Any) -> dict[str, Any]:
     return {key: serialize_value(value) for key, value in items}
 
 
-@app.get("/")
-def root() -> dict[str, str]:
-    return {"message": "Real Estate Agent API is running"}
-
-
-@app.get("/health")
-def health_check() -> dict[str, str]:
-    try:
-        with get_engine().connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except (SQLAlchemyError, ValueError) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Database is unavailable",
-        ) from exc
-    return {"status": "ok", "database": "connected"}
-
-
 @app.get("/listings")
-def get_listings(
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
-) -> list[dict[str, Any]]:
+def get_listings():
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM listings_current
+                ORDER BY id
+                LIMIT 100;
+            """)
+            rows = cur.fetchall()
+            return [row_to_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+@app.post("/score", response_model=List[ScoreResult])
+def run_scoring(limit: int = Query(100, ge=1, le=1000)):
     query = text(
         """
-        SELECT *
-        FROM listings_current
-        ORDER BY id
-        LIMIT :limit OFFSET :offset
-        """
-    )
-    with get_engine().connect() as conn:
-        rows = conn.execute(query, {"limit": limit, "offset": offset}).all()
-    return [row_to_dict(row) for row in rows]
-
-
-@app.get("/listings/{listing_id}")
-def get_listing(listing_id: int) -> dict[str, Any]:
-    query = text(
-        """
-        SELECT *
-        FROM listings_current
-        WHERE id = :listing_id
-        """
-    )
-    with get_engine().connect() as conn:
-        row = conn.execute(query, {"listing_id": listing_id}).first()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Listing not found")
-    return row_to_dict(row)
-
-
-@app.post("/score", response_model=list[MarketScoreResult])
-def run_scoring(
-    limit: int = Query(100, ge=1, le=1000),
-) -> list[dict[str, Any]]:
-    engine = get_engine()
-    score_listings_against_market(engine)
-    query = text(
-        """
+        WITH ranked_history AS (
+            SELECT
+                source,
+                source_listing_id,
+                address,
+                city,
+                state,
+                list_price,
+                status,
+                days_on_market,
+                sqft,
+                price_per_sqft,
+                snapshot_timestamp,
+                ROW_NUMBER() OVER (
+                    PARTITION BY source, source_listing_id
+                    ORDER BY snapshot_timestamp DESC
+                ) AS rn
+            FROM listing_history
+        ),
+        latest AS (
+            SELECT
+                source,
+                source_listing_id,
+                address,
+                city,
+                state,
+                list_price AS current_price,
+                status AS current_status,
+                days_on_market,
+                sqft,
+                price_per_sqft,
+                snapshot_timestamp AS current_snapshot
+            FROM ranked_history
+            WHERE rn = 1
+        ),
+        previous AS (
+            SELECT
+                source,
+                source_listing_id,
+                list_price AS previous_price,
+                snapshot_timestamp AS previous_snapshot
+            FROM ranked_history
+            WHERE rn = 2
+        )
         SELECT
-            source,
-            source_listing_id,
-            address,
-            city,
-            state,
-            county_name,
-            list_price,
-            county_median_sale_price,
-            price_vs_county_median,
-            pct_below_or_above_median,
-            market_score,
-            score_reason,
-            scored_at
-        FROM listing_market_scores
-        ORDER BY market_score DESC, pct_below_or_above_median ASC
+            l.source,
+            l.source_listing_id,
+            l.address,
+            l.city,
+            l.state,
+            l.current_price,
+            p.previous_price,
+            (l.current_price - p.previous_price) AS price_change,
+            ROUND(
+                ((l.current_price - p.previous_price) / NULLIF(p.previous_price, 0)) * 100,
+                2
+            ) AS price_change_pct,
+            l.days_on_market,
+            l.price_per_sqft,
+            CASE
+                WHEN l.current_price < p.previous_price THEN 40
+                ELSE 10
+            END
+            + CASE
+                WHEN l.current_status = 'active' THEN 30
+                ELSE 0
+            END
+            + CASE
+                WHEN l.days_on_market IS NOT NULL AND l.days_on_market > 30 THEN 20
+                ELSE 0
+            END
+            + CASE
+                WHEN l.price_per_sqft IS NOT NULL AND l.price_per_sqft < 300 THEN 20
+                ELSE 0
+            END
+            AS market_score,
+            CASE
+                WHEN l.current_price < p.previous_price THEN 'Price dropped since last snapshot.'
+                WHEN l.current_status = 'active' THEN 'Listing is active and in market.'
+                ELSE 'Standard listing scoring.'
+            END AS score_reason
+        FROM latest l
+        JOIN previous p
+            ON l.source = p.source
+           AND l.source_listing_id = p.source_listing_id
+        ORDER BY market_score DESC, price_change_pct ASC
         LIMIT :limit
         """
     )
+
+    engine = get_engine()
     with engine.connect() as conn:
-        rows = conn.execute(query, {"limit": limit}).all()
-    return [row_to_dict(row) for row in rows]
+        results = conn.execute(query, {"limit": limit}).all()
 
+    return [row_to_dict(row) for row in results]
 
-@app.get("/alerts", response_model=list[AlertRecord])
-def list_alerts(
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
-) -> list[dict[str, Any]]:
+@app.get("/listings/{listing_id}")
+def get_listing(listing_id: int):
+    conn = get_connection()
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM listings_current
+                WHERE id = %s;
+            """, (listing_id,))
+
+            row = cur.fetchone()
+
+            if row is None:
+                raise HTTPException(status_code=404, detail="Listing not found")
+
+            return row
+    finally:
+        conn.close()
+
+@app.get("/alerts", response_model=List[AlertRecord])
+def list_alerts(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
     query = text(
         """
         SELECT
@@ -170,24 +254,84 @@ def list_alerts(
         LIMIT :limit OFFSET :offset
         """
     )
-    with get_engine().connect() as conn:
-        rows = conn.execute(query, {"limit": limit, "offset": offset}).all()
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        results = conn.execute(query, {"limit": limit, "offset": offset}).all()
 
     alerts = []
-    for row in rows:
-        row_data = row_to_dict(row)
-        payload_raw = row_data.pop("payload_json", None)
-        if isinstance(payload_raw, str):
+    for row in results:
+        payload_raw = row.payload_json
+        payload = {}
+        if payload_raw:
             try:
                 payload = json.loads(payload_raw)
             except json.JSONDecodeError:
                 payload = {"raw": payload_raw}
-        else:
-            payload = payload_raw or {}
+
+        row_data = row_to_dict(row)
         row_data["payload"] = payload
+        row_data.pop("payload_json", None)
         alerts.append(row_data)
 
     return alerts
+
+
+@app.post("/listings/{source}/{source_listing_id}/analyses")
+def analyze_listing(source: str, source_listing_id: str, request: AnalysisRequest):
+    try:
+        return create_analysis(source, source_listing_id, request.model)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/listings/{source}/{source_listing_id}/analyses")
+def list_analyses(source: str, source_listing_id: str, limit: int = Query(20, ge=1, le=100)):
+    with get_engine().connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, source, source_listing_id, model, prompt_version,
+                   evidence_json AS evidence, analysis_json AS analysis, created_at
+            FROM investment_analyses
+            WHERE source = :source AND source_listing_id = :listing_id
+            ORDER BY created_at DESC LIMIT :limit
+        """), {"source": source, "listing_id": source_listing_id, "limit": limit}).all()
+    return [row_to_dict(row) for row in rows]
+
+
+@app.post("/analyses/{analysis_id}/reviews", status_code=201)
+def review_analysis(analysis_id: int, request: AnalysisReviewRequest):
+    if request.decision == "corrected" and not request.corrections:
+        raise HTTPException(status_code=422, detail="Corrected reviews require corrections")
+    with get_engine().begin() as conn:
+        exists = conn.execute(text("SELECT 1 FROM investment_analyses WHERE id = :id"),
+                              {"id": analysis_id}).first()
+        if not exists:
+            raise HTTPException(status_code=404, detail="Analysis not found")
+        row = conn.execute(text("""
+            INSERT INTO investment_analysis_reviews
+                (analysis_id, decision, reviewer, notes, corrections_json)
+            VALUES (:analysis_id, :decision, :reviewer, :notes, CAST(:corrections AS JSONB))
+            RETURNING id, created_at
+        """), {"analysis_id": analysis_id, "decision": request.decision,
+                "reviewer": request.reviewer, "notes": request.notes,
+                "corrections": json.dumps(request.corrections) if request.corrections else None}).one()
+    return {"id": row.id, "analysis_id": analysis_id, **request.dict(),
+            "created_at": row.created_at}
+
+
+@app.get("/analyses/{analysis_id}/reviews")
+def list_analysis_reviews(analysis_id: int):
+    with get_engine().connect() as conn:
+        rows = conn.execute(text("""
+            SELECT id, analysis_id, decision, reviewer, notes,
+                   corrections_json AS corrections, created_at
+            FROM investment_analysis_reviews
+            WHERE analysis_id = :analysis_id
+            ORDER BY created_at DESC
+        """), {"analysis_id": analysis_id}).all()
+    return [row_to_dict(row) for row in rows]
 
 
 if __name__ == "__main__":
