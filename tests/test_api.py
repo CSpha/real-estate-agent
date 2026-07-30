@@ -12,6 +12,16 @@ def test_root_does_not_require_database():
     assert response.json() == {"message": "Real Estate Agent API is running"}
 
 
+def test_analyst_endpoints_are_disabled_by_default():
+    response = TestClient(app).post(
+        "/listings/test-source/1/analyses",
+        json={"model": "gpt-5.4-mini"},
+    )
+
+    assert response.status_code == 404
+    assert "disabled" in response.json()["detail"].lower()
+
+
 def test_saved_search_routes_are_exposed():
     paths = TestClient(app).get("/openapi.json").json()["paths"]
 

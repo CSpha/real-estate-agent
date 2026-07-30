@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Literal, Optional
@@ -13,6 +14,15 @@ from app.analyst import create_analysis
 
 
 app = FastAPI(title="Real Estate Agent API")
+
+
+def analyst_feature_enabled() -> bool:
+    for env_name in ("ANALYST_FEATURES_ENABLED", "ENABLE_ANALYST_FEATURES"):
+        value = os.getenv(env_name)
+        if value is not None:
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
 
 @app.get("/")
 def root():
@@ -279,6 +289,9 @@ def list_alerts(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, g
 
 @app.post("/listings/{source}/{source_listing_id}/analyses")
 def analyze_listing(source: str, source_listing_id: str, request: AnalysisRequest):
+    if not analyst_feature_enabled():
+        raise HTTPException(status_code=404, detail="Analyst feature is disabled")
+
     try:
         return create_analysis(source, source_listing_id, request.model)
     except LookupError as exc:
@@ -289,6 +302,9 @@ def analyze_listing(source: str, source_listing_id: str, request: AnalysisReques
 
 @app.get("/listings/{source}/{source_listing_id}/analyses")
 def list_analyses(source: str, source_listing_id: str, limit: int = Query(20, ge=1, le=100)):
+    if not analyst_feature_enabled():
+        raise HTTPException(status_code=404, detail="Analyst feature is disabled")
+
     with get_engine().connect() as conn:
         rows = conn.execute(text("""
             SELECT id, source, source_listing_id, model, prompt_version,
@@ -302,6 +318,9 @@ def list_analyses(source: str, source_listing_id: str, limit: int = Query(20, ge
 
 @app.post("/analyses/{analysis_id}/reviews", status_code=201)
 def review_analysis(analysis_id: int, request: AnalysisReviewRequest):
+    if not analyst_feature_enabled():
+        raise HTTPException(status_code=404, detail="Analyst feature is disabled")
+
     if request.decision == "corrected" and not request.corrections:
         raise HTTPException(status_code=422, detail="Corrected reviews require corrections")
     with get_engine().begin() as conn:
@@ -323,6 +342,9 @@ def review_analysis(analysis_id: int, request: AnalysisReviewRequest):
 
 @app.get("/analyses/{analysis_id}/reviews")
 def list_analysis_reviews(analysis_id: int):
+    if not analyst_feature_enabled():
+        raise HTTPException(status_code=404, detail="Analyst feature is disabled")
+
     with get_engine().connect() as conn:
         rows = conn.execute(text("""
             SELECT id, analysis_id, decision, reviewer, notes,

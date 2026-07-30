@@ -1,27 +1,23 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: July 18, 2026
+Last reviewed: July 29, 2026
 
 ## Goal
 
-Build a reliable application that retrieves authorized real-estate listings, stores current and historical listing data, evaluates configurable search criteria, and sends deduplicated Slack notifications when meaningful events occur.
+Build a reliable application that retrieves authorized real-estate listings, stores current and historical listing data, evaluates configurable search criteria, scores opportunities with transparent market context, and sends deduplicated Slack notifications when meaningful events occur.
 
 ## Current state
 
-Phase 1 stabilization is implemented in commit `8b892c7`. Phase 2 configurable
-saved searches are implemented in commit `17cee39`. Both commits are pushed to
-`origin/main`. The repository now contains:
+The repository has moved beyond the original Phase 1/Phase 2 milestone notes and now includes:
 
 - One authoritative Alembic-managed PostgreSQL schema
 - Immutable raw JSON payloads and normalized current listings
-- An auditable, idempotent property-level comparable-sales schema and CSV
-  importer, ready for an authorized source export
-- Versioned deterministic comparable selection with visible ZIP-to-city
-  fallback tiers
-- Explainable comparable valuation using robust weighted-median price per
-  square foot, outlier safeguards, value ranges, and confidence components
+- An auditable, idempotent property-level comparable-sales schema and CSV importer
+- Versioned deterministic comparable selection with visible fallback tiers
+- Explainable comparable valuation using weighted-median price-per-square-foot logic, outlier safeguards, value ranges, and confidence components
 - Idempotent sample ingestion and change-aware listing history
 - One authoritative county-level market scoring implementation
+- Mortgage-rate outlook and backtest analysis modules with signal-based scoring
 - Slack alerts for price drops and potential deals
 - A FastAPI API with database-aware health checking
 - Docker Compose services for PostgreSQL and the API, including readiness checks
@@ -29,36 +25,23 @@ saved searches are implemented in commit `17cee39`. Both commits are pushed to
 - Setup, migration, pipeline, API, testing, and rollback documentation
 - Versioned saved searches with validated, explainable criteria evaluation
 - Stable listing/search event fingerprints and persisted match transitions
-- A PostgreSQL-backed price-drop alert outbox with atomic worker claims,
-  retries, and visible permanent failures
+- A PostgreSQL-backed price-drop alert outbox with atomic worker claims, retries, and visible permanent failures
 
-The application is not yet connected to a live listing provider. The primary pipeline still loads `data/sample_listings.csv`.
+The application is still not connected to a live listing provider. The primary pipeline still loads sample data from `data/sample_listings.csv`.
 
-## Remaining issues
+## Near-term priorities
 
-The original Phase 1 schema, configuration, ingestion, scoring, API, and
-documentation issues are resolved. Remaining work includes:
+The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Continue expanding PostgreSQL integration coverage as later phases are
-   implemented; the Phase 1 and Phase 2 integration suite now passes against
-   the isolated `realestate_test` Docker database.
-2. An existing prototype database is not automatically reconciled with the new
-   clean Alembic baseline. Existing data must be exported and inspected before
-   rebuilding or writing a one-time migration.
-3. The main pipeline refreshes market scores but does not load county data or
-   queue potential-deal alerts.
-4. The legacy `potential_deals` score threshold remains hard-coded, although
-   saved-search criteria are now configurable.
-5. Geographic bounding-box criteria are deferred until a listing provider
-   supplies reliable latitude/longitude fields.
-6. County-wide median price alone is too coarse to identify a genuine deal.
-7. There is no authorized live listing provider.
-8. There is no production scheduler or long-running worker process. The
-   queue and worker commands are separate, but must still be scheduled.
-   Structured logging, pipeline-run history, authentication, monitoring, and
-   backup automation are also absent.
-9. `/health` verifies database connectivity but cannot report listing freshness
-   until live synchronization exists.
+1. Add a live provider adapter and replace the sample-data-only pipeline path.
+2. Add a documented migration path for existing prototype databases so they can be reconciled with the Alembic baseline.
+3. Finish wiring the pipeline so county-market data and potential-deal alert queueing run consistently in the same flow.
+4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.
+5. Add geographic bounding-box criteria once provider coordinates are available.
+6. Continue improving the deal-scoring model so it combines comparable valuation, local market context, price-change history, and confidence more transparently.
+7. Add an operational scheduler and long-running worker process for sync and alert processing.
+8. Add structured logging, pipeline-run history, authentication, monitoring, and backup automation.
+9. Extend `/health` to report sync freshness and backlog health, not just database connectivity.
 
 ## Design principles
 

@@ -41,6 +41,14 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.4-mini
 ```
 
+The analyst endpoints are optional and disabled by default. To enable them, add either of the following to your environment:
+
+```env
+ANALYST_FEATURES_ENABLED=true
+# or
+ENABLE_ANALYST_FEATURES=true
+```
+
 ## Database
 
 Start Postgres:
