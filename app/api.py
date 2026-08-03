@@ -7,13 +7,16 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
-from app.db import get_connection
+from sqlalchemy.exc import SQLAlchemyError
 
-from app.utils.db import get_engine
+from app.db import get_connection
 from app.analyst import create_analysis
+from app.searches.router import router as saved_searches_router
+from app.utils.db import get_engine
 
 
 app = FastAPI(title="Real Estate Agent API")
+app.include_router(saved_searches_router)
 
 
 def analyst_feature_enabled() -> bool:
@@ -31,7 +34,15 @@ def root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    try:
+        with get_engine().connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except (SQLAlchemyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database is unavailable",
+        ) from exc
+    return {"status": "ok", "database": "connected"}
 
 
 class Listing(BaseModel):

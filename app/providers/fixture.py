@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.providers.base import ProviderAdapter
-
 
 class FixtureProvider:
     """Simple fixture-backed provider used for initial adapter tests."""

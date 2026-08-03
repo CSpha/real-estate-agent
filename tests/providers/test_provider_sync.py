@@ -15,8 +15,11 @@ class ProviderSyncTests(unittest.TestCase):
                     """
                     CREATE TABLE listings_raw (
                         source TEXT NOT NULL,
+                        source_listing_id TEXT NOT NULL,
+                        payload_hash TEXT NOT NULL,
                         raw_record_json TEXT NOT NULL,
-                        ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE (source, source_listing_id, payload_hash)
                     )
                     """
                 )
@@ -35,6 +38,7 @@ class ProviderSyncTests(unittest.TestCase):
                         beds REAL,
                         baths REAL,
                         sqft REAL,
+                        lot_size_acres REAL,
                         property_type TEXT,
                         status TEXT,
                         days_on_market INTEGER,

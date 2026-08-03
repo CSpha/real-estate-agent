@@ -11,9 +11,9 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import Engine, text
 
+from app.db import get_engine
 from app.normalization import normalize_listing
 from app.providers.base import ProviderAdapter
-from app.utils.db import get_engine
 
 
 REQUIRED_COLUMNS = [
@@ -41,13 +41,37 @@ RAW_INSERT_SQL = text(
     """
     INSERT INTO listings_raw (
         source,
+        source_listing_id,
+        payload_hash,
         raw_record_json
     )
     VALUES (
         :source,
+        :source_listing_id,
+        :payload_hash,
         CAST(:raw_record_json AS JSONB)
     )
-    ON CONFLICT DO NOTHING
+    ON CONFLICT (source, source_listing_id, payload_hash)
+    DO NOTHING
+    """
+)
+
+SQLITE_RAW_INSERT_SQL = text(
+    """
+    INSERT INTO listings_raw (
+        source,
+        source_listing_id,
+        payload_hash,
+        raw_record_json
+    )
+    VALUES (
+        :source,
+        :source_listing_id,
+        :payload_hash,
+        :raw_record_json
+    )
+    ON CONFLICT (source, source_listing_id, payload_hash)
+    DO NOTHING
     """
 )
 
@@ -64,6 +88,7 @@ CURRENT_UPSERT_SQL = text(
         beds,
         baths,
         sqft,
+        lot_size_acres,
         property_type,
         status,
         days_on_market,
@@ -82,6 +107,7 @@ CURRENT_UPSERT_SQL = text(
         :beds,
         :baths,
         :sqft,
+        :lot_size_acres,
         :property_type,
         :status,
         :days_on_market,
@@ -99,9 +125,112 @@ CURRENT_UPSERT_SQL = text(
         beds = EXCLUDED.beds,
         baths = EXCLUDED.baths,
         sqft = EXCLUDED.sqft,
+        lot_size_acres = EXCLUDED.lot_size_acres,
         property_type = EXCLUDED.property_type,
         status = EXCLUDED.status,
         days_on_market = EXCLUDED.days_on_market,
+        first_seen_date = LEAST(
+            listings_current.first_seen_date,
+            EXCLUDED.first_seen_date
+        ),
+        last_seen_date = GREATEST(
+            listings_current.last_seen_date,
+            EXCLUDED.last_seen_date
+        ),
+        price_per_sqft = EXCLUDED.price_per_sqft,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE ROW(
+        listings_current.address,
+        listings_current.city,
+        listings_current.state,
+        listings_current.zip,
+        listings_current.list_price,
+        listings_current.beds,
+        listings_current.baths,
+        listings_current.sqft,
+        listings_current.lot_size_acres,
+        listings_current.property_type,
+        listings_current.status,
+        listings_current.days_on_market,
+        listings_current.first_seen_date,
+        listings_current.last_seen_date,
+        listings_current.price_per_sqft
+    ) IS DISTINCT FROM ROW(
+        EXCLUDED.address,
+        EXCLUDED.city,
+        EXCLUDED.state,
+        EXCLUDED.zip,
+        EXCLUDED.list_price,
+        EXCLUDED.beds,
+        EXCLUDED.baths,
+        EXCLUDED.sqft,
+        EXCLUDED.lot_size_acres,
+        EXCLUDED.property_type,
+        EXCLUDED.status,
+        EXCLUDED.days_on_market,
+        LEAST(listings_current.first_seen_date, EXCLUDED.first_seen_date),
+        GREATEST(listings_current.last_seen_date, EXCLUDED.last_seen_date),
+        EXCLUDED.price_per_sqft
+    )
+    """
+)
+
+SQLITE_CURRENT_UPSERT_SQL = text(
+    """
+    INSERT INTO listings_current (
+        source,
+        source_listing_id,
+        address,
+        city,
+        state,
+        zip,
+        list_price,
+        beds,
+        baths,
+        sqft,
+        lot_size_acres,
+        property_type,
+        status,
+        days_on_market,
+        first_seen_date,
+        last_seen_date,
+        price_per_sqft
+    )
+    VALUES (
+        :source,
+        :source_listing_id,
+        :address,
+        :city,
+        :state,
+        :zip,
+        :list_price,
+        :beds,
+        :baths,
+        :sqft,
+        :lot_size_acres,
+        :property_type,
+        :status,
+        :days_on_market,
+        :first_seen_date,
+        :last_seen_date,
+        :price_per_sqft
+    )
+    ON CONFLICT (source, source_listing_id)
+    DO UPDATE SET
+        address = EXCLUDED.address,
+        city = EXCLUDED.city,
+        state = EXCLUDED.state,
+        zip = EXCLUDED.zip,
+        list_price = EXCLUDED.list_price,
+        beds = EXCLUDED.beds,
+        baths = EXCLUDED.baths,
+        sqft = EXCLUDED.sqft,
+        lot_size_acres = EXCLUDED.lot_size_acres,
+        property_type = EXCLUDED.property_type,
+        status = EXCLUDED.status,
+        days_on_market = EXCLUDED.days_on_market,
+        first_seen_date = EXCLUDED.first_seen_date,
+        last_seen_date = EXCLUDED.last_seen_date,
         price_per_sqft = EXCLUDED.price_per_sqft,
         updated_at = CURRENT_TIMESTAMP
     """
@@ -109,12 +238,44 @@ CURRENT_UPSERT_SQL = text(
 
 EXISTING_CURRENT_SELECT_SQL = text(
     """
-    SELECT address, city, state, zip, list_price, beds, baths, sqft,
-           property_type, status, days_on_market, first_seen_date,
-           last_seen_date, price_per_sqft
+    SELECT
+        address,
+        city,
+        state,
+        zip,
+        list_price,
+        beds,
+        baths,
+        sqft,
+        lot_size_acres,
+        property_type,
+        status,
+        days_on_market,
+        first_seen_date,
+        last_seen_date,
+        price_per_sqft
     FROM listings_current
-    WHERE source = :source AND source_listing_id = :source_listing_id
+    WHERE source = :source
+      AND source_listing_id = :source_listing_id
     """
+)
+
+TRACKED_CURRENT_FIELDS = (
+    "address",
+    "city",
+    "state",
+    "zip",
+    "list_price",
+    "beds",
+    "baths",
+    "sqft",
+    "lot_size_acres",
+    "property_type",
+    "status",
+    "days_on_market",
+    "first_seen_date",
+    "last_seen_date",
+    "price_per_sqft",
 )
 
 
@@ -138,40 +299,38 @@ def _prepare_raw_record(record: dict[str, Any]) -> dict[str, str]:
     )
     return {
         "source": str(record["source"]).strip(),
+        "source_listing_id": str(record["source_listing_id"]).strip(),
+        "payload_hash": hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest(),
         "raw_record_json": canonical_payload,
     }
 
 
-def _normalize_for_compare(value: Any) -> Any:
+def _sqlite_value(value: Any) -> Any:
     if isinstance(value, (date, datetime)):
         return value.isoformat()
     if isinstance(value, Decimal):
-        return str(value)
-    if hasattr(value, "item"):
-        return value.item()
+        return float(value)
     return value
 
 
-def _record_matches_existing(existing_row: Any, record: dict[str, Any]) -> bool:
-    return (
-        _normalize_for_compare(existing_row.address) == _normalize_for_compare(record.get("address"))
-        and _normalize_for_compare(existing_row.city) == _normalize_for_compare(record.get("city"))
-        and _normalize_for_compare(existing_row.state) == _normalize_for_compare(record.get("state"))
-        and _normalize_for_compare(existing_row.zip) == _normalize_for_compare(record.get("zip"))
-        and _normalize_for_compare(existing_row.list_price) == _normalize_for_compare(record.get("list_price"))
-        and _normalize_for_compare(existing_row.beds) == _normalize_for_compare(record.get("beds"))
-        and _normalize_for_compare(existing_row.baths) == _normalize_for_compare(record.get("baths"))
-        and _normalize_for_compare(existing_row.sqft) == _normalize_for_compare(record.get("sqft"))
-        and _normalize_for_compare(existing_row.property_type) == _normalize_for_compare(record.get("property_type"))
-        and _normalize_for_compare(existing_row.status) == _normalize_for_compare(record.get("status"))
-        and _normalize_for_compare(existing_row.days_on_market) == _normalize_for_compare(record.get("days_on_market"))
-        and _normalize_for_compare(existing_row.first_seen_date) == _normalize_for_compare(record.get("first_seen_date"))
-        and _normalize_for_compare(existing_row.last_seen_date) == _normalize_for_compare(record.get("last_seen_date"))
-        and _normalize_for_compare(existing_row.price_per_sqft) == _normalize_for_compare(record.get("price_per_sqft"))
+def _sqlite_record_changed(
+    existing: Any,
+    record: dict[str, Any],
+) -> bool:
+    if existing is None:
+        return True
+    return any(
+        _sqlite_value(existing._mapping[field])
+        != _sqlite_value(record.get(field))
+        for field in TRACKED_CURRENT_FIELDS
     )
 
 
-def ingest_records(records: list[dict[str, Any]], *, engine: Engine | None = None) -> dict[str, int]:
+def ingest_records(
+    records: list[dict[str, Any]],
+    *,
+    engine: Engine | None = None,
+) -> dict[str, int]:
     if not records:
         return {"received": 0, "raw_inserted": 0, "current_changed": 0}
 
@@ -179,19 +338,24 @@ def ingest_records(records: list[dict[str, Any]], *, engine: Engine | None = Non
     normalized_records = [normalize_listing(record) for record in records]
     engine = engine or get_engine()
     with engine.begin() as conn:
-        raw_result = conn.execute(RAW_INSERT_SQL, raw_records)
-        current_changed = 0
-        for record in normalized_records:
-            existing_row = conn.execute(
-                EXISTING_CURRENT_SELECT_SQL,
-                {
-                    "source": record.get("source"),
-                    "source_listing_id": record.get("source_listing_id"),
-                },
-            ).fetchone()
-            conn.execute(CURRENT_UPSERT_SQL, record)
-            if existing_row is None or not _record_matches_existing(existing_row, record):
-                current_changed += 1
+        if engine.dialect.name == "sqlite":
+            raw_result = conn.execute(SQLITE_RAW_INSERT_SQL, raw_records)
+            current_changed = 0
+            for record in normalized_records:
+                existing = conn.execute(
+                    EXISTING_CURRENT_SELECT_SQL,
+                    {
+                        "source": record["source"],
+                        "source_listing_id": record["source_listing_id"],
+                    },
+                ).one_or_none()
+                if _sqlite_record_changed(existing, record):
+                    conn.execute(SQLITE_CURRENT_UPSERT_SQL, record)
+                    current_changed += 1
+        else:
+            raw_result = conn.execute(RAW_INSERT_SQL, raw_records)
+            current_result = conn.execute(CURRENT_UPSERT_SQL, normalized_records)
+            current_changed = max(current_result.rowcount, 0)
 
     counts = {
         "received": len(records),
@@ -207,15 +371,21 @@ def ingest_records(records: list[dict[str, Any]], *, engine: Engine | None = Non
     return counts
 
 
-def load_provider_records(provider: ProviderAdapter, *, engine: Engine | None = None) -> dict[str, int]:
+def load_provider_records(
+    provider: ProviderAdapter,
+    *,
+    engine: Engine | None = None,
+) -> dict[str, int]:
     raw_records, _ = provider.fetch_updated_since()
     normalized_records = [provider.normalize(record) for record in raw_records]
     return ingest_records(normalized_records, engine=engine)
 
 
-def load_sample_csv(file_path: str, engine: Engine | None = None) -> dict[str, int]:
+def load_sample_csv(
+    file_path: str,
+    engine: Engine | None = None,
+) -> dict[str, int]:
     csv_path = Path(file_path)
-
     if not csv_path.exists():
         raise FileNotFoundError(f"Could not find file: {file_path}")
 
@@ -223,13 +393,12 @@ def load_sample_csv(file_path: str, engine: Engine | None = None) -> dict[str, i
         csv_path,
         dtype={"source": "string", "source_listing_id": "string", "zip": "string"},
     )
-
-    missing_columns = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+    missing_columns = [column for column in REQUIRED_COLUMNS if column not in df]
     if missing_columns:
         raise ValueError(f"Missing columns in CSV: {missing_columns}")
 
     selected_columns = REQUIRED_COLUMNS + [
-        column for column in OPTIONAL_COLUMNS if column in df.columns
+        column for column in OPTIONAL_COLUMNS if column in df
     ]
     clean_df = (
         df[selected_columns]
@@ -240,8 +409,10 @@ def load_sample_csv(file_path: str, engine: Engine | None = None) -> dict[str, i
     return ingest_records(records, engine=engine)
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Load listings from a CSV or a provider adapter.")
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Load listings from a CSV or provider adapter."
+    )
     parser.add_argument("--provider", choices=["sample", "fixture"], default="sample")
     parser.add_argument("--csv-path", default="data/sample_listings.csv")
     args = parser.parse_args()
@@ -249,7 +420,10 @@ if __name__ == "__main__":
     if args.provider == "fixture":
         from app.providers.fixture import FixtureProvider
 
-        provider = FixtureProvider()
-        load_provider_records(provider)
+        load_provider_records(FixtureProvider())
     else:
         load_sample_csv(args.csv_path)
+
+
+if __name__ == "__main__":
+    main()
