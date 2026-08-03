@@ -160,7 +160,10 @@ def _apply_outlier_policy(
         )
 
     ordinary = [item for item in observations if not item["outlier"]]
-    filter_applied = len(ordinary) >= MINIMUM_USABLE_COMPS
+    filter_applied = (
+        len(ordinary) < len(observations)
+        and len(ordinary) >= MINIMUM_USABLE_COMPS
+    )
     included = ordinary if filter_applied else observations
     included_ids = {
         (item["source"], item["source_sale_id"]) for item in included

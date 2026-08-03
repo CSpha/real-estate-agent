@@ -15,6 +15,8 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
 - An auditable, idempotent property-level comparable-sales schema and CSV importer
 - Versioned deterministic comparable selection with visible fallback tiers
 - Explainable comparable valuation using weighted-median price-per-square-foot logic, outlier safeguards, value ranges, and confidence components
+- Immutable valuation snapshots and a versioned 40-point comparable-discount
+  component for the in-progress Deal Score v2
 - Idempotent sample ingestion and change-aware listing history
 - One authoritative county-level market scoring implementation
 - Mortgage-rate outlook and backtest analysis modules with signal-based scoring
@@ -290,9 +292,10 @@ Important stable identifiers:
 The current county-median score remains implemented as coarse market context.
 The property-level comparable-sales schema, CSV importer, deterministic
 selection tiers, and comparable valuation with confidence scoring are
-implemented. Deal scoring, persistence, and backfill remain planned. Deal
-Score v2 must not replace the current score until those remaining inputs and
-tests are complete.
+implemented. Immutable valuation persistence and the comparable-discount
+component are also implemented. Remaining Deal Score v2 components,
+aggregation, backfill, and activation remain planned. Deal Score v2 must not
+replace the current score until those remaining inputs and tests are complete.
 
 ### Proposed Deal Score v2
 

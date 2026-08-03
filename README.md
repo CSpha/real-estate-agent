@@ -41,7 +41,8 @@ OPENAI_API_KEY=...
 OPENAI_MODEL=gpt-5.4-mini
 ```
 
-The analyst endpoints are optional and disabled by default. To enable them, add either of the following to your environment:
+The analyst endpoints are optional and disabled by default. To enable them, add
+either of the following to your environment:
 
 ```env
 ANALYST_FEATURES_ENABLED=true
@@ -64,6 +65,12 @@ python -m app.utils.run_sql sql/001_create_listings_current.sql
 python -m app.utils.run_sql sql/002_create_listing_history.sql
 python -m app.utils.run_sql sql/003_create_alerts_sent.sql
 python -m app.utils.run_sql sql/011_create_investment_analyses.sql
+```
+
+Apply the authoritative Alembic schema, including comparable valuations:
+
+```powershell
+python -m alembic upgrade head
 ```
 
 ## AI deal analyst
@@ -108,3 +115,25 @@ Run the API:
 ```powershell
 python -m app.api
 ```
+
+## Comparable valuation and Deal Score v2
+
+Load property-level comparable sales, then persist a listing valuation:
+
+```powershell
+python -m app.ingest.load_comparable_sales
+python -m app.transforms.persist_comparable_valuation sample_feed 1001 `
+  --as-of-date 2026-07-27
+```
+
+`listing_comparable_valuations` stores an immutable calculation snapshot keyed
+by its input fingerprint. An unchanged rerun reuses the existing row and
+timestamp; changed listing or comparable inputs create a new auditable
+snapshot. `deal_score_v2_components` stores the versioned
+`comparable_discount` result linked to that valuation.
+
+The comparable-discount component contributes zero points at or above supported
+value and scales to its full 40 points at a 30% discount. It remains
+`unavailable`, rather than receiving zero, when no supported valuation exists
+or confidence is below 40. Deal Score v2 is still incomplete and is not used by
+the pipeline or alert logic.
