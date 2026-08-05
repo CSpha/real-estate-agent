@@ -145,7 +145,15 @@ history available on or before the valuation date:
 - Up to 4 points for distinct price reductions, with full credit at three
 - 2 points when the latest reduction is within 30 days, 1 point within 90 days
 
-The component is `unavailable` when no valid price history exists. Each score
-component has its own input fingerprint, so unchanged evidence is reused while
-backfilled or changed history produces a new auditable component. Deal Score v2
-is still incomplete and is not used by the pipeline or alert logic.
+The `days_on_market` component contributes up to 15 points by comparing the
+listing with the latest county median available by the valuation date. It
+scores zero at or below 75% of the county median and scales to full credit at
+twice the median. Listing evidence older than 30 days or county context older
+than 180 days makes the component unavailable instead of silently using stale
+data.
+
+The opportunity component is also `unavailable` when no valid price history
+exists. Each score component has its own input fingerprint, so unchanged
+evidence is reused while backfilled or changed history produces a new auditable
+component. Deal Score v2 is still incomplete and is not used by the pipeline or
+alert logic.

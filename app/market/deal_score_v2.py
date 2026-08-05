@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 
-SCORING_VERSION = "deal-score-v2-draft-1"
+SCORING_VERSION = "deal-score-v2-draft-2"
 COMPARABLE_DISCOUNT_COMPONENT = "comparable_discount"
 COMPARABLE_DISCOUNT_MAX_POINTS = Decimal("40.00")
 FULL_CREDIT_DISCOUNT = Decimal("0.30")
@@ -19,6 +19,13 @@ FULL_CREDIT_CUMULATIVE_REDUCTION = Decimal("0.15")
 REDUCTION_FREQUENCY_MAX_POINTS = Decimal("4.00")
 FULL_CREDIT_REDUCTION_COUNT = Decimal("3")
 RECENT_REDUCTION_MAX_POINTS = Decimal("2.00")
+
+DAYS_ON_MARKET_COMPONENT = "days_on_market"
+DAYS_ON_MARKET_MAX_POINTS = Decimal("15.00")
+DAYS_ON_MARKET_ZERO_POINT_RATIO = Decimal("0.75")
+DAYS_ON_MARKET_FULL_CREDIT_RATIO = Decimal("2.00")
+MAX_LISTING_EVIDENCE_AGE_DAYS = 30
+MAX_MARKET_CONTEXT_AGE_DAYS = 180
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -229,4 +236,110 @@ def calculate_listing_opportunity_component(
                 "recent_reduction_partial_credit_days": 90,
             },
         },
+    }
+
+
+def calculate_days_on_market_component(
+    *,
+    subject_days_on_market: Any,
+    listing_snapshot_timestamp: datetime | None,
+    county_median_days_on_market: Any,
+    county_name: str | None,
+    market_period_date: date | None,
+    as_of_date: date,
+) -> dict[str, Any]:
+    subject_days = _decimal(subject_days_on_market)
+    county_median = _decimal(county_median_days_on_market)
+    listing_evidence_age = (
+        (as_of_date - listing_snapshot_timestamp.date()).days
+        if listing_snapshot_timestamp is not None
+        else None
+    )
+    market_context_age = (
+        (as_of_date - market_period_date).days
+        if market_period_date is not None
+        else None
+    )
+    inputs = {
+        "as_of_date": as_of_date,
+        "subject_days_on_market": subject_days,
+        "listing_snapshot_timestamp": listing_snapshot_timestamp,
+        "listing_evidence_age_days": listing_evidence_age,
+        "county_name": county_name,
+        "county_median_days_on_market": county_median,
+        "market_period_date": market_period_date,
+        "market_context_age_days": market_context_age,
+        "thresholds": {
+            "zero_point_ratio": DAYS_ON_MARKET_ZERO_POINT_RATIO,
+            "full_credit_ratio": DAYS_ON_MARKET_FULL_CREDIT_RATIO,
+            "max_listing_evidence_age_days": MAX_LISTING_EVIDENCE_AGE_DAYS,
+            "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
+        },
+    }
+
+    unavailable_reason = None
+    if subject_days is None or subject_days < 0:
+        unavailable_reason = "Valid listing days-on-market history is unavailable."
+    elif (
+        listing_evidence_age is None
+        or not 0 <= listing_evidence_age <= MAX_LISTING_EVIDENCE_AGE_DAYS
+    ):
+        unavailable_reason = "Listing days-on-market evidence is missing or stale."
+    elif county_median is None or county_median <= 0:
+        unavailable_reason = "A valid county median days on market is unavailable."
+    elif (
+        market_context_age is None
+        or not 0 <= market_context_age <= MAX_MARKET_CONTEXT_AGE_DAYS
+    ):
+        unavailable_reason = "County days-on-market context is missing or stale."
+
+    if unavailable_reason is not None:
+        return {
+            "scoring_version": SCORING_VERSION,
+            "component_key": DAYS_ON_MARKET_COMPONENT,
+            "status": "unavailable",
+            "points": None,
+            "max_points": DAYS_ON_MARKET_MAX_POINTS,
+            "reason": unavailable_reason,
+            "inputs": inputs,
+        }
+
+    days_on_market_ratio = subject_days / county_median
+    qualifying_ratio = max(
+        Decimal("0"),
+        days_on_market_ratio - DAYS_ON_MARKET_ZERO_POINT_RATIO,
+    )
+    scoring_range = (
+        DAYS_ON_MARKET_FULL_CREDIT_RATIO
+        - DAYS_ON_MARKET_ZERO_POINT_RATIO
+    )
+    points = min(
+        DAYS_ON_MARKET_MAX_POINTS,
+        qualifying_ratio / scoring_range * DAYS_ON_MARKET_MAX_POINTS,
+    ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
+    inputs["days_on_market_ratio"] = days_on_market_ratio
+
+    if points == 0:
+        reason = (
+            "Listing days on market are no more than 75% of the county median."
+        )
+    elif points == DAYS_ON_MARKET_MAX_POINTS:
+        reason = (
+            "Listing days on market are at least twice the county median, "
+            "indicating maximum time-on-market negotiation leverage."
+        )
+    else:
+        reason = (
+            f"Listing days on market are {days_on_market_ratio:.2f} times the "
+            f"{county_name} County median."
+        )
+
+    return {
+        "scoring_version": SCORING_VERSION,
+        "component_key": DAYS_ON_MARKET_COMPONENT,
+        "status": "available",
+        "points": points,
+        "max_points": DAYS_ON_MARKET_MAX_POINTS,
+        "reason": reason,
+        "inputs": inputs,
     }

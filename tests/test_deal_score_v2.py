@@ -5,6 +5,7 @@ import pytest
 
 from app.market.deal_score_v2 import (
     calculate_comparable_discount_component,
+    calculate_days_on_market_component,
     calculate_listing_opportunity_component,
 )
 
@@ -150,3 +151,66 @@ def test_listing_opportunity_excludes_history_after_analysis_date():
     assert component["points"] == Decimal("0.00")
     assert component["inputs"]["reduction_count"] == 0
     assert len(component["inputs"]["price_observations"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("subject_days", "expected_points"),
+    [
+        (15, Decimal("0.00")),
+        (20, Decimal("3.00")),
+        (30, Decimal("9.00")),
+        (40, Decimal("15.00")),
+        (60, Decimal("15.00")),
+    ],
+)
+def test_days_on_market_component_scales_against_county_median(
+    subject_days,
+    expected_points,
+):
+    component = calculate_days_on_market_component(
+        subject_days_on_market=subject_days,
+        listing_snapshot_timestamp=datetime(
+            2026,
+            7,
+            20,
+            tzinfo=timezone.utc,
+        ),
+        county_median_days_on_market=20,
+        county_name="Wayne",
+        market_period_date=date(2026, 7, 1),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == expected_points
+    assert component["max_points"] == Decimal("15.00")
+    assert component["scoring_version"] == "deal-score-v2-draft-2"
+
+
+@pytest.mark.parametrize(
+    ("listing_timestamp", "market_period", "subject_days", "median_days"),
+    [
+        (datetime(2026, 6, 26, tzinfo=timezone.utc), date(2026, 7, 1), 40, 20),
+        (datetime(2026, 7, 20, tzinfo=timezone.utc), date(2026, 1, 27), 40, 20),
+        (datetime(2026, 7, 28, tzinfo=timezone.utc), date(2026, 7, 1), 40, 20),
+        (datetime(2026, 7, 20, tzinfo=timezone.utc), date(2026, 7, 1), None, 20),
+        (datetime(2026, 7, 20, tzinfo=timezone.utc), date(2026, 7, 1), 40, None),
+    ],
+)
+def test_days_on_market_component_rejects_missing_stale_or_future_evidence(
+    listing_timestamp,
+    market_period,
+    subject_days,
+    median_days,
+):
+    component = calculate_days_on_market_component(
+        subject_days_on_market=subject_days,
+        listing_snapshot_timestamp=listing_timestamp,
+        county_median_days_on_market=median_days,
+        county_name="Wayne",
+        market_period_date=market_period,
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "unavailable"
+    assert component["points"] is None

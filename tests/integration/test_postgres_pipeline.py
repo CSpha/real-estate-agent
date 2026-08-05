@@ -286,12 +286,26 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                     source,
                     source_listing_id,
                     list_price,
+                    days_on_market,
                     snapshot_timestamp
                 )
                 VALUES
-                    ('sample_feed', '1001', 90000, '2026-06-01 12:00:00+00'),
-                    ('sample_feed', '1001', 85000, '2026-06-20 12:00:00+00'),
-                    ('sample_feed', '1001', 78500, '2026-07-15 12:00:00+00')
+                    ('sample_feed', '1001', 90000, 10, '2026-06-01 12:00:00+00'),
+                    ('sample_feed', '1001', 85000, 30, '2026-06-20 12:00:00+00'),
+                    ('sample_feed', '1001', 78500, 45, '2026-07-15 12:00:00+00')
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                INSERT INTO county_sales (
+                    county_name,
+                    state,
+                    period_date,
+                    median_days_on_market
+                )
+                VALUES ('Wayne', 'OH', DATE '2026-07-01', 20)
                 """
             )
         )
@@ -331,10 +345,14 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert set(first_components) == {
             "comparable_discount",
             "listing_opportunity",
+            "days_on_market",
         }
         assert first_components["listing_opportunity"]["component"][
             "points"
         ] == Decimal("12.34")
+        assert first_components["days_on_market"]["component"][
+            "points"
+        ] == Decimal("15.00")
         assert all(
             not item["component_created"]
             for item in repeated_components.values()
@@ -379,7 +397,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                 conn.scalar(
                     text("SELECT COUNT(*) FROM deal_score_v2_components")
                 )
-                == 4
+                == 6
             )
             stored = conn.execute(
                 text(
@@ -422,6 +440,16 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                           '2026-06-20 12:00:00+00',
                           '2026-07-15 12:00:00+00'
                       )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM county_sales
+                    WHERE county_name = 'Wayne'
+                      AND state = 'OH'
+                      AND period_date = DATE '2026-07-01'
                     """
                 )
             )

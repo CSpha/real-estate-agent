@@ -14,8 +14,11 @@ from app.market.comparable_valuation import (
     MINIMUM_USABLE_COMPS,
     value_listing,
 )
-from app.market.deal_score_v2 import calculate_comparable_discount_component
-from app.market.deal_score_v2 import calculate_listing_opportunity_component
+from app.market.deal_score_v2 import (
+    calculate_comparable_discount_component,
+    calculate_days_on_market_component,
+    calculate_listing_opportunity_component,
+)
 
 
 VALUATION_INSERT_SQL = text(
@@ -145,6 +148,38 @@ PRICE_HISTORY_SQL = text(
     """
 )
 
+LISTING_DOM_SQL = text(
+    """
+    SELECT days_on_market, snapshot_timestamp
+    FROM listing_history
+    WHERE source = :source
+      AND source_listing_id = :source_listing_id
+      AND snapshot_timestamp::date <= :as_of_date
+      AND days_on_market IS NOT NULL
+    ORDER BY snapshot_timestamp DESC, id DESC
+    LIMIT 1
+    """
+)
+
+COUNTY_DOM_SQL = text(
+    """
+    SELECT
+        lookup.county_name,
+        sales.median_days_on_market,
+        sales.period_date
+    FROM city_county_lookup lookup
+    JOIN county_sales sales
+      ON LOWER(sales.county_name) = LOWER(lookup.county_name)
+     AND UPPER(sales.state) = UPPER(lookup.state)
+    WHERE LOWER(lookup.city) = LOWER(:city)
+      AND UPPER(lookup.state) = UPPER(:state)
+      AND sales.period_date <= :as_of_date
+      AND sales.median_days_on_market IS NOT NULL
+    ORDER BY sales.period_date DESC, sales.id DESC
+    LIMIT 1
+    """
+)
+
 
 def _json_default(value: Any) -> str:
     if isinstance(value, (date, datetime, Decimal)):
@@ -236,11 +271,47 @@ def persist_comparable_valuation(
                 },
             ).mappings()
         ]
+        listing_dom = connection.execute(
+            LISTING_DOM_SQL,
+            {
+                "source": valuation["subject"]["source"],
+                "source_listing_id": valuation["subject"][
+                    "source_listing_id"
+                ],
+                "as_of_date": valuation["as_of_date"],
+            },
+        ).mappings().one_or_none()
+        county_dom = connection.execute(
+            COUNTY_DOM_SQL,
+            {
+                "city": valuation["subject"]["city"],
+                "state": valuation["subject"]["state"],
+                "as_of_date": valuation["as_of_date"],
+            },
+        ).mappings().one_or_none()
     opportunity_component = calculate_listing_opportunity_component(
         price_history,
         as_of_date=valuation["as_of_date"],
     )
-    components = [discount_component, opportunity_component]
+    days_on_market_component = calculate_days_on_market_component(
+        subject_days_on_market=(
+            listing_dom["days_on_market"] if listing_dom else None
+        ),
+        listing_snapshot_timestamp=(
+            listing_dom["snapshot_timestamp"] if listing_dom else None
+        ),
+        county_median_days_on_market=(
+            county_dom["median_days_on_market"] if county_dom else None
+        ),
+        county_name=county_dom["county_name"] if county_dom else None,
+        market_period_date=county_dom["period_date"] if county_dom else None,
+        as_of_date=valuation["as_of_date"],
+    )
+    components = [
+        discount_component,
+        opportunity_component,
+        days_on_market_component,
+    ]
 
     with engine.begin() as connection:
         valuation_record, valuation_created = _insert_or_find(
