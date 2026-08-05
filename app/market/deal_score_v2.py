@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
+from dateutil.relativedelta import relativedelta
 
-SCORING_VERSION = "deal-score-v2-draft-2"
+
+SCORING_VERSION = "deal-score-v2-draft-3"
 COMPARABLE_DISCOUNT_COMPONENT = "comparable_discount"
 COMPARABLE_DISCOUNT_MAX_POINTS = Decimal("40.00")
 FULL_CREDIT_DISCOUNT = Decimal("0.30")
@@ -26,6 +28,26 @@ DAYS_ON_MARKET_ZERO_POINT_RATIO = Decimal("0.75")
 DAYS_ON_MARKET_FULL_CREDIT_RATIO = Decimal("2.00")
 MAX_LISTING_EVIDENCE_AGE_DAYS = 30
 MAX_MARKET_CONTEXT_AGE_DAYS = 180
+
+MARKET_MOMENTUM_COMPONENT = "market_momentum"
+MARKET_MOMENTUM_MAX_POINTS = Decimal("15.00")
+MARKET_MOMENTUM_NEUTRAL_POINTS = Decimal("7.50")
+MARKET_MOMENTUM_FLOOR_CHANGE = Decimal("-0.10")
+MARKET_MOMENTUM_FULL_CREDIT_CHANGE = Decimal("0.10")
+MARKET_MOMENTUM_HORIZONS = (
+    {
+        "key": "three_month",
+        "months": 3,
+        "weight": Decimal("0.40"),
+        "reference_tolerance_days": 45,
+    },
+    {
+        "key": "twelve_month",
+        "months": 12,
+        "weight": Decimal("0.60"),
+        "reference_tolerance_days": 60,
+    },
+)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -340,6 +362,164 @@ def calculate_days_on_market_component(
         "status": "available",
         "points": points,
         "max_points": DAYS_ON_MARKET_MAX_POINTS,
+        "reason": reason,
+        "inputs": inputs,
+    }
+
+
+def _market_price_observations(
+    market_history: list[dict[str, Any]],
+    as_of_date: date,
+) -> list[dict[str, Any]]:
+    observations = []
+    for row in sorted(
+        market_history,
+        key=lambda item: (item["period_date"], item.get("id", 0)),
+    ):
+        period = row["period_date"]
+        period_date = period.date() if isinstance(period, datetime) else period
+        price = _decimal(row.get("median_sale_price"))
+        if period_date > as_of_date or price is None or price <= 0:
+            continue
+        observations.append(
+            {
+                "county_name": row.get("county_name"),
+                "period_date": period_date,
+                "median_sale_price": price,
+            }
+        )
+    return observations
+
+
+def _momentum_horizon_points(change: Decimal) -> Decimal:
+    qualifying_change = min(
+        MARKET_MOMENTUM_FULL_CREDIT_CHANGE,
+        max(MARKET_MOMENTUM_FLOOR_CHANGE, change),
+    )
+    scoring_range = MARKET_MOMENTUM_FULL_CREDIT_CHANGE - MARKET_MOMENTUM_FLOOR_CHANGE
+    return (
+        (qualifying_change - MARKET_MOMENTUM_FLOOR_CHANGE)
+        / scoring_range
+        * MARKET_MOMENTUM_MAX_POINTS
+    )
+
+
+def calculate_market_momentum_component(
+    market_history: list[dict[str, Any]],
+    *,
+    as_of_date: date,
+) -> dict[str, Any]:
+    observations = _market_price_observations(market_history, as_of_date)
+    latest = observations[-1] if observations else None
+    latest_age_days = (as_of_date - latest["period_date"]).days if latest else None
+    inputs = {
+        "as_of_date": as_of_date,
+        "county_name": latest["county_name"] if latest else None,
+        "latest_observation": latest,
+        "latest_observation_age_days": latest_age_days,
+        "price_observations": observations,
+        "horizons": {},
+        "thresholds": {
+            "floor_change_pct": MARKET_MOMENTUM_FLOOR_CHANGE,
+            "full_credit_change_pct": MARKET_MOMENTUM_FULL_CREDIT_CHANGE,
+            "neutral_points": MARKET_MOMENTUM_NEUTRAL_POINTS,
+            "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
+        },
+    }
+
+    if latest is None:
+        unavailable_reason = "No valid county median sale-price history is available."
+    elif latest_age_days is None or not (
+        0 <= latest_age_days <= MAX_MARKET_CONTEXT_AGE_DAYS
+    ):
+        unavailable_reason = "County sale-price history is missing or stale."
+    else:
+        unavailable_reason = None
+
+    if unavailable_reason is not None:
+        return {
+            "scoring_version": SCORING_VERSION,
+            "component_key": MARKET_MOMENTUM_COMPONENT,
+            "status": "unavailable",
+            "points": None,
+            "max_points": MARKET_MOMENTUM_MAX_POINTS,
+            "reason": unavailable_reason,
+            "inputs": inputs,
+        }
+
+    weighted_points = Decimal("0")
+    available_weight = Decimal("0")
+    for definition in MARKET_MOMENTUM_HORIZONS:
+        target_date = latest["period_date"] - relativedelta(months=definition["months"])
+        earliest_reference_date = target_date - timedelta(
+            days=definition["reference_tolerance_days"]
+        )
+        references = [
+            observation
+            for observation in observations[:-1]
+            if earliest_reference_date <= observation["period_date"] <= target_date
+        ]
+        reference = references[-1] if references else None
+        horizon = {
+            "months": definition["months"],
+            "weight": definition["weight"],
+            "target_date": target_date,
+            "earliest_reference_date": earliest_reference_date,
+            "reference_observation": reference,
+            "status": "available" if reference else "unavailable",
+        }
+        if reference is not None:
+            change = latest["median_sale_price"] / reference[
+                "median_sale_price"
+            ] - Decimal("1")
+            horizon_points = _momentum_horizon_points(change)
+            horizon["change_pct"] = change
+            horizon["points_before_weight"] = horizon_points.quantize(
+                POINTS_QUANTUM,
+                rounding=ROUND_HALF_UP,
+            )
+            weighted_points += definition["weight"] * horizon_points
+            available_weight += definition["weight"]
+        inputs["horizons"][definition["key"]] = horizon
+
+    if available_weight == 0:
+        return {
+            "scoring_version": SCORING_VERSION,
+            "component_key": MARKET_MOMENTUM_COMPONENT,
+            "status": "unavailable",
+            "points": None,
+            "max_points": MARKET_MOMENTUM_MAX_POINTS,
+            "reason": "County sale-price history has no usable 3- or 12-month reference.",
+            "inputs": inputs,
+        }
+
+    neutral_weight = Decimal("1") - available_weight
+    points = (
+        weighted_points + neutral_weight * MARKET_MOMENTUM_NEUTRAL_POINTS
+    ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
+    inputs["available_weight"] = available_weight
+    inputs["neutral_weight"] = neutral_weight
+    inputs["point_contributions"] = {
+        "available_horizons": weighted_points,
+        "missing_horizon_neutral_fill": (
+            neutral_weight * MARKET_MOMENTUM_NEUTRAL_POINTS
+        ),
+    }
+
+    available_horizon_count = sum(
+        horizon["status"] == "available" for horizon in inputs["horizons"].values()
+    )
+    reason = (
+        f"County median sale-price momentum contributes {points} of "
+        f"{MARKET_MOMENTUM_MAX_POINTS} points using "
+        f"{available_horizon_count} of 2 trend horizons."
+    )
+    return {
+        "scoring_version": SCORING_VERSION,
+        "component_key": MARKET_MOMENTUM_COMPONENT,
+        "status": "available",
+        "points": points,
+        "max_points": MARKET_MOMENTUM_MAX_POINTS,
         "reason": reason,
         "inputs": inputs,
     }

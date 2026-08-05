@@ -303,9 +303,13 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                     county_name,
                     state,
                     period_date,
+                    median_sale_price,
                     median_days_on_market
                 )
-                VALUES ('Wayne', 'OH', DATE '2026-07-01', 20)
+                VALUES
+                    ('Wayne', 'OH', DATE '2025-07-01', 100000, NULL),
+                    ('Wayne', 'OH', DATE '2026-04-01', 108000, NULL),
+                    ('Wayne', 'OH', DATE '2026-07-01', 110000, 20)
                 """
             )
         )
@@ -346,6 +350,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
             "comparable_discount",
             "listing_opportunity",
             "days_on_market",
+            "market_momentum",
         }
         assert first_components["listing_opportunity"]["component"][
             "points"
@@ -353,6 +358,9 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert first_components["days_on_market"]["component"][
             "points"
         ] == Decimal("15.00")
+        assert first_components["market_momentum"]["component"][
+            "points"
+        ] == Decimal("12.56")
         assert all(
             not item["component_created"]
             for item in repeated_components.values()
@@ -397,7 +405,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                 conn.scalar(
                     text("SELECT COUNT(*) FROM deal_score_v2_components")
                 )
-                == 6
+                == 8
             )
             stored = conn.execute(
                 text(
@@ -449,7 +457,11 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                     DELETE FROM county_sales
                     WHERE county_name = 'Wayne'
                       AND state = 'OH'
-                      AND period_date = DATE '2026-07-01'
+                      AND period_date IN (
+                          DATE '2025-07-01',
+                          DATE '2026-04-01',
+                          DATE '2026-07-01'
+                      )
                     """
                 )
             )

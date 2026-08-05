@@ -130,7 +130,7 @@ python -m app.transforms.persist_comparable_valuation sample_feed 1001 `
 by its input fingerprint. An unchanged rerun reuses the existing row and
 timestamp; changed listing or comparable inputs create a new auditable
 snapshot. `deal_score_v2_components` stores the versioned
-`comparable_discount` result linked to that valuation.
+component results linked to that valuation.
 
 The comparable-discount component contributes zero points at or above supported
 value and scales to its full 40 points at a 30% discount. It remains
@@ -151,6 +151,14 @@ scores zero at or below 75% of the county median and scales to full credit at
 twice the median. Listing evidence older than 30 days or county context older
 than 180 days makes the component unavailable instead of silently using stale
 data.
+
+The `market_momentum` component contributes up to 15 points from county median
+sale-price changes. It blends a 3-month trend at 40% and a 12-month trend at
+60%. Each horizon scores from zero at a 10% decline, through 7.5 points when
+flat, to 15 points at a 10% increase. When one horizon is unavailable, its
+weight receives neutral credit rather than treating missing data as positive
+momentum. County history older than 180 days, or history with neither usable
+horizon, makes the component unavailable.
 
 The opportunity component is also `unavailable` when no valid price history
 exists. Each score component has its own input fingerprint, so unchanged

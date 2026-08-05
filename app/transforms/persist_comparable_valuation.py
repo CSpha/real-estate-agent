@@ -18,6 +18,7 @@ from app.market.deal_score_v2 import (
     calculate_comparable_discount_component,
     calculate_days_on_market_component,
     calculate_listing_opportunity_component,
+    calculate_market_momentum_component,
 )
 
 
@@ -180,6 +181,24 @@ COUNTY_DOM_SQL = text(
     """
 )
 
+COUNTY_MARKET_HISTORY_SQL = text(
+    """
+    SELECT
+        lookup.county_name,
+        sales.period_date,
+        sales.median_sale_price
+    FROM city_county_lookup lookup
+    JOIN county_sales sales
+      ON LOWER(sales.county_name) = LOWER(lookup.county_name)
+     AND UPPER(sales.state) = UPPER(lookup.state)
+    WHERE LOWER(lookup.city) = LOWER(:city)
+      AND UPPER(lookup.state) = UPPER(:state)
+      AND sales.period_date <= :as_of_date
+      AND sales.median_sale_price > 0
+    ORDER BY sales.period_date, sales.id
+    """
+)
+
 
 def _json_default(value: Any) -> str:
     if isinstance(value, (date, datetime, Decimal)):
@@ -289,6 +308,17 @@ def persist_comparable_valuation(
                 "as_of_date": valuation["as_of_date"],
             },
         ).mappings().one_or_none()
+        county_market_history = [
+            dict(row)
+            for row in connection.execute(
+                COUNTY_MARKET_HISTORY_SQL,
+                {
+                    "city": valuation["subject"]["city"],
+                    "state": valuation["subject"]["state"],
+                    "as_of_date": valuation["as_of_date"],
+                },
+            ).mappings()
+        ]
     opportunity_component = calculate_listing_opportunity_component(
         price_history,
         as_of_date=valuation["as_of_date"],
@@ -307,10 +337,15 @@ def persist_comparable_valuation(
         market_period_date=county_dom["period_date"] if county_dom else None,
         as_of_date=valuation["as_of_date"],
     )
+    market_momentum_component = calculate_market_momentum_component(
+        county_market_history,
+        as_of_date=valuation["as_of_date"],
+    )
     components = [
         discount_component,
         opportunity_component,
         days_on_market_component,
+        market_momentum_component,
     ]
 
     with engine.begin() as connection:

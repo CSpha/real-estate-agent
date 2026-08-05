@@ -7,6 +7,7 @@ from app.market.deal_score_v2 import (
     calculate_comparable_discount_component,
     calculate_days_on_market_component,
     calculate_listing_opportunity_component,
+    calculate_market_momentum_component,
 )
 
 
@@ -184,7 +185,7 @@ def test_days_on_market_component_scales_against_county_median(
     assert component["status"] == "available"
     assert component["points"] == expected_points
     assert component["max_points"] == Decimal("15.00")
-    assert component["scoring_version"] == "deal-score-v2-draft-2"
+    assert component["scoring_version"] == "deal-score-v2-draft-3"
 
 
 @pytest.mark.parametrize(
@@ -214,3 +215,114 @@ def test_days_on_market_component_rejects_missing_stale_or_future_evidence(
 
     assert component["status"] == "unavailable"
     assert component["points"] is None
+
+
+def _market_history(*prices_and_dates):
+    return [
+        {
+            "id": index,
+            "county_name": "Wayne",
+            "median_sale_price": Decimal(str(price)),
+            "period_date": date.fromisoformat(period_date),
+        }
+        for index, (price, period_date) in enumerate(
+            prices_and_dates,
+            start=1,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("latest_price", "expected_points"),
+    [
+        (100000, Decimal("7.50")),
+        (110000, Decimal("15.00")),
+        (90000, Decimal("0.00")),
+    ],
+)
+def test_market_momentum_maps_both_horizons_to_points(
+    latest_price,
+    expected_points,
+):
+    component = calculate_market_momentum_component(
+        _market_history(
+            (100000, "2025-07-01"),
+            (100000, "2026-04-01"),
+            (latest_price, "2026-07-01"),
+        ),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == expected_points
+    assert component["max_points"] == Decimal("15.00")
+    assert component["inputs"]["available_weight"] == Decimal("1.00")
+
+
+def test_market_momentum_blends_short_and_annual_trends():
+    component = calculate_market_momentum_component(
+        _market_history(
+            (110000, "2025-07-01"),
+            (100000, "2026-04-01"),
+            (110000, "2026-07-01"),
+        ),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["points"] == Decimal("10.50")
+    assert component["inputs"]["horizons"]["three_month"][
+        "points_before_weight"
+    ] == Decimal("15.00")
+    assert component["inputs"]["horizons"]["twelve_month"][
+        "points_before_weight"
+    ] == Decimal("7.50")
+
+
+def test_market_momentum_uses_neutral_fill_for_a_missing_horizon():
+    component = calculate_market_momentum_component(
+        _market_history(
+            (100000, "2026-04-01"),
+            (110000, "2026-07-01"),
+        ),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == Decimal("10.50")
+    assert component["inputs"]["available_weight"] == Decimal("0.40")
+    assert component["inputs"]["neutral_weight"] == Decimal("0.60")
+    assert component["inputs"]["horizons"]["twelve_month"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        _market_history((100000, "2026-01-01")),
+        _market_history((100000, "2026-07-01")),
+        [],
+    ],
+)
+def test_market_momentum_rejects_stale_or_insufficient_history(history):
+    component = calculate_market_momentum_component(
+        history,
+        as_of_date=date(2026, 7, 1),
+    )
+
+    assert component["status"] == "unavailable"
+    assert component["points"] is None
+
+
+def test_market_momentum_excludes_observations_after_analysis_date():
+    component = calculate_market_momentum_component(
+        _market_history(
+            (100000, "2025-07-01"),
+            (100000, "2026-04-01"),
+            (100000, "2026-07-01"),
+            (200000, "2026-08-01"),
+        ),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["points"] == Decimal("7.50")
+    assert component["inputs"]["latest_observation"]["period_date"] == date(2026, 7, 1)
+    assert len(component["inputs"]["price_observations"]) == 3
