@@ -278,31 +278,74 @@ def test_comparable_valuation_is_explainable(postgres_engine):
 def test_comparable_valuation_persistence_is_idempotent_and_auditable(
     postgres_engine,
 ):
-    first = persist_comparable_valuation(
-        "sample_feed",
-        "1001",
-        as_of_date=date(2026, 7, 27),
-        engine=postgres_engine,
-    )
-    repeated = persist_comparable_valuation(
-        "sample_feed",
-        "1001",
-        as_of_date=date(2026, 7, 27),
-        engine=postgres_engine,
-    )
-
-    assert first["valuation_created"] is True
-    assert first["component_created"] is True
-    assert repeated["valuation_created"] is False
-    assert repeated["component_created"] is False
-    assert repeated["valuation_id"] == first["valuation_id"]
-    assert repeated["component_id"] == first["component_id"]
-    assert repeated["valuation_created_at"] == first["valuation_created_at"]
-    assert repeated["component_created_at"] == first["component_created_at"]
-    assert first["deal_score_v2_component"]["status"] == "available"
-    assert first["deal_score_v2_component"]["points"] == Decimal("6.01")
-
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO listing_history (
+                    source,
+                    source_listing_id,
+                    list_price,
+                    snapshot_timestamp
+                )
+                VALUES
+                    ('sample_feed', '1001', 90000, '2026-06-01 12:00:00+00'),
+                    ('sample_feed', '1001', 85000, '2026-06-20 12:00:00+00'),
+                    ('sample_feed', '1001', 78500, '2026-07-15 12:00:00+00')
+                """
+            )
+        )
     try:
+        first = persist_comparable_valuation(
+            "sample_feed",
+            "1001",
+            as_of_date=date(2026, 7, 27),
+            engine=postgres_engine,
+        )
+        repeated = persist_comparable_valuation(
+            "sample_feed",
+            "1001",
+            as_of_date=date(2026, 7, 27),
+            engine=postgres_engine,
+        )
+
+        assert first["valuation_created"] is True
+        assert first["component_created"] is True
+        assert repeated["valuation_created"] is False
+        assert repeated["component_created"] is False
+        assert repeated["valuation_id"] == first["valuation_id"]
+        assert repeated["component_id"] == first["component_id"]
+        assert repeated["valuation_created_at"] == first["valuation_created_at"]
+        assert repeated["component_created_at"] == first["component_created_at"]
+        assert first["deal_score_v2_component"]["status"] == "available"
+        assert first["deal_score_v2_component"]["points"] == Decimal("6.01")
+
+        first_components = {
+            item["component"]["component_key"]: item
+            for item in first["deal_score_v2_components"]
+        }
+        repeated_components = {
+            item["component"]["component_key"]: item
+            for item in repeated["deal_score_v2_components"]
+        }
+        assert set(first_components) == {
+            "comparable_discount",
+            "listing_opportunity",
+        }
+        assert first_components["listing_opportunity"]["component"][
+            "points"
+        ] == Decimal("12.34")
+        assert all(
+            not item["component_created"]
+            for item in repeated_components.values()
+        )
+        assert {
+            key: item["component_id"] for key, item in first_components.items()
+        } == {
+            key: item["component_id"]
+            for key, item in repeated_components.items()
+        }
+
         with postgres_engine.begin() as conn:
             conn.execute(
                 text(
@@ -324,6 +367,38 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert changed["component_created"] is True
         assert changed["valuation_id"] != first["valuation_id"]
         assert changed["input_fingerprint"] != first["input_fingerprint"]
+
+        with postgres_engine.connect() as conn:
+            assert (
+                conn.scalar(
+                    text("SELECT COUNT(*) FROM listing_comparable_valuations")
+                )
+                == 2
+            )
+            assert (
+                conn.scalar(
+                    text("SELECT COUNT(*) FROM deal_score_v2_components")
+                )
+                == 4
+            )
+            stored = conn.execute(
+                text(
+                    """
+                    SELECT
+                        component.status,
+                        component.points,
+                        component.max_points,
+                        component.input_fingerprint
+                    FROM deal_score_v2_components component
+                    WHERE component.id = :component_id
+                    """
+                ),
+                {"component_id": first["component_id"]},
+            ).one()
+            assert stored.status == "available"
+            assert stored.points == Decimal("6.01")
+            assert stored.max_points == Decimal("40.00")
+            assert len(stored.input_fingerprint) == 64
     finally:
         with postgres_engine.begin() as conn:
             conn.execute(
@@ -336,31 +411,20 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                     """
                 )
             )
-
-    with postgres_engine.connect() as conn:
-        assert (
-            conn.scalar(
-                text("SELECT COUNT(*) FROM listing_comparable_valuations")
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM listing_history
+                    WHERE source = 'sample_feed'
+                      AND source_listing_id = '1001'
+                      AND snapshot_timestamp IN (
+                          '2026-06-01 12:00:00+00',
+                          '2026-06-20 12:00:00+00',
+                          '2026-07-15 12:00:00+00'
+                      )
+                    """
+                )
             )
-            == 2
-        )
-        assert (
-            conn.scalar(text("SELECT COUNT(*) FROM deal_score_v2_components"))
-            == 2
-        )
-        stored = conn.execute(
-            text(
-                """
-                SELECT component.status, component.points, component.max_points
-                FROM deal_score_v2_components component
-                WHERE component.id = :component_id
-                """
-            ),
-            {"component_id": first["component_id"]},
-        ).one()
-        assert stored.status == "available"
-        assert stored.points == Decimal("6.01")
-        assert stored.max_points == Decimal("40.00")
 
 
 def test_material_price_change_creates_one_event(postgres_engine):

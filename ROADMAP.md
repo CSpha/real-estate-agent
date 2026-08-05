@@ -17,6 +17,8 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
 - Explainable comparable valuation using weighted-median price-per-square-foot logic, outlier safeguards, value ranges, and confidence components
 - Immutable valuation snapshots and a versioned 40-point comparable-discount
   component for the in-progress Deal Score v2
+- A versioned 15-point listing-opportunity component using cumulative price
+  reductions, reduction frequency, and recency without future-data leakage
 - Idempotent sample ingestion and change-aware listing history
 - One authoritative county-level market scoring implementation
 - Mortgage-rate outlook and backtest analysis modules with signal-based scoring
@@ -292,17 +294,19 @@ Important stable identifiers:
 The current county-median score remains implemented as coarse market context.
 The property-level comparable-sales schema, CSV importer, deterministic
 selection tiers, and comparable valuation with confidence scoring are
-implemented. Immutable valuation persistence and the comparable-discount
-component are also implemented. Remaining Deal Score v2 components,
-aggregation, backfill, and activation remain planned. Deal Score v2 must not
-replace the current score until those remaining inputs and tests are complete.
+implemented. Immutable valuation persistence, the comparable-discount
+component, and the listing-opportunity component are also implemented.
+Remaining Deal Score v2 components, aggregation, backfill, and activation
+remain planned. Deal Score v2 must not replace the current score until those
+remaining inputs and tests are complete.
 
 ### Proposed Deal Score v2
 
 Use a transparent 100-point score:
 
 - 40 points: discount to an estimated comparable value
-- 20 points: price per square foot relative to similar local properties
+- 20 points: allocation under review; a separate price-per-square-foot score
+  would double-count evidence already used by comparable valuation
 - 15 points: listing opportunity, including cumulative price reductions and
   reduction frequency
 - 10 points: days on market relative to the local median

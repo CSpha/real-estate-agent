@@ -15,6 +15,7 @@ from app.market.comparable_valuation import (
     value_listing,
 )
 from app.market.deal_score_v2 import calculate_comparable_discount_component
+from app.market.deal_score_v2 import calculate_listing_opportunity_component
 
 
 VALUATION_INSERT_SQL = text(
@@ -93,6 +94,7 @@ COMPONENT_INSERT_SQL = text(
         valuation_id,
         scoring_version,
         component_key,
+        input_fingerprint,
         status,
         points,
         max_points,
@@ -103,13 +105,19 @@ COMPONENT_INSERT_SQL = text(
         :valuation_id,
         :scoring_version,
         :component_key,
+        :component_input_fingerprint,
         :status,
         :points,
         :max_points,
         :reason,
         CAST(:calculation_json AS JSONB)
     )
-    ON CONFLICT (valuation_id, scoring_version, component_key)
+    ON CONFLICT (
+        valuation_id,
+        scoring_version,
+        component_key,
+        input_fingerprint
+    )
     DO NOTHING
     RETURNING id, created_at
     """
@@ -122,6 +130,18 @@ COMPONENT_SELECT_SQL = text(
     WHERE valuation_id = :valuation_id
       AND scoring_version = :scoring_version
       AND component_key = :component_key
+      AND input_fingerprint = :component_input_fingerprint
+    """
+)
+
+PRICE_HISTORY_SQL = text(
+    """
+    SELECT id, list_price, snapshot_timestamp
+    FROM listing_history
+    WHERE source = :source
+      AND source_listing_id = :source_listing_id
+      AND snapshot_timestamp::date <= :as_of_date
+    ORDER BY snapshot_timestamp, id
     """
 )
 
@@ -201,8 +221,26 @@ def persist_comparable_valuation(
         "confidence_label": valuation["confidence_label"],
         "calculation_json": calculation_json,
     }
-    component = calculate_comparable_discount_component(valuation)
-    component_json = _canonical_json(component)
+    discount_component = calculate_comparable_discount_component(valuation)
+    with engine.connect() as connection:
+        price_history = [
+            dict(row)
+            for row in connection.execute(
+                PRICE_HISTORY_SQL,
+                {
+                    "source": valuation["subject"]["source"],
+                    "source_listing_id": valuation["subject"][
+                        "source_listing_id"
+                    ],
+                    "as_of_date": valuation["as_of_date"],
+                },
+            ).mappings()
+        ]
+    opportunity_component = calculate_listing_opportunity_component(
+        price_history,
+        as_of_date=valuation["as_of_date"],
+    )
+    components = [discount_component, opportunity_component]
 
     with engine.begin() as connection:
         valuation_record, valuation_created = _insert_or_find(
@@ -211,40 +249,59 @@ def persist_comparable_valuation(
             VALUATION_SELECT_SQL,
             valuation_parameters,
         )
-        component_parameters = {
-            "valuation_id": valuation_record["id"],
-            "scoring_version": component["scoring_version"],
-            "component_key": component["component_key"],
-            "status": component["status"],
-            "points": component["points"],
-            "max_points": component["max_points"],
-            "reason": component["reason"],
-            "calculation_json": component_json,
-        }
-        component_record, component_created = _insert_or_find(
-            connection,
-            COMPONENT_INSERT_SQL,
-            COMPONENT_SELECT_SQL,
-            component_parameters,
-        )
+        persisted_components = []
+        for component in components:
+            component_json = _canonical_json(component)
+            component_input_fingerprint = hashlib.sha256(
+                component_json.encode("utf-8")
+            ).hexdigest()
+            component_parameters = {
+                "valuation_id": valuation_record["id"],
+                "scoring_version": component["scoring_version"],
+                "component_key": component["component_key"],
+                "component_input_fingerprint": component_input_fingerprint,
+                "status": component["status"],
+                "points": component["points"],
+                "max_points": component["max_points"],
+                "reason": component["reason"],
+                "calculation_json": component_json,
+            }
+            component_record, component_created = _insert_or_find(
+                connection,
+                COMPONENT_INSERT_SQL,
+                COMPONENT_SELECT_SQL,
+                component_parameters,
+            )
+            persisted_components.append(
+                {
+                    "component_id": component_record["id"],
+                    "component_created": component_created,
+                    "component_created_at": component_record["created_at"],
+                    "input_fingerprint": component_input_fingerprint,
+                    "component": component,
+                }
+            )
+
+    discount_persistence = persisted_components[0]
 
     result = {
         "valuation_id": valuation_record["id"],
         "valuation_created": valuation_created,
         "valuation_created_at": valuation_record["created_at"],
         "input_fingerprint": input_fingerprint,
-        "component_id": component_record["id"],
-        "component_created": component_created,
-        "component_created_at": component_record["created_at"],
+        "component_id": discount_persistence["component_id"],
+        "component_created": discount_persistence["component_created"],
+        "component_created_at": discount_persistence["component_created_at"],
         "valuation": valuation,
-        "deal_score_v2_component": component,
+        "deal_score_v2_component": discount_component,
+        "deal_score_v2_components": persisted_components,
     }
     print(
         "Comparable valuation persistence complete: "
         f"valuation_id={result['valuation_id']} "
         f"({'created' if valuation_created else 'reused'}), "
-        f"component_id={result['component_id']} "
-        f"({'created' if component_created else 'reused'})."
+        f"{sum(item['component_created'] for item in persisted_components)} "
+        f"of {len(persisted_components)} component(s) created."
     )
     return result
 
@@ -252,8 +309,8 @@ def persist_comparable_valuation(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Persist a comparable valuation and its Deal Score v2 "
-            "discount component."
+            "Persist a comparable valuation and its available Deal Score v2 "
+            "components."
         )
     )
     parser.add_argument("source", help="Listing source")

@@ -135,5 +135,17 @@ snapshot. `deal_score_v2_components` stores the versioned
 The comparable-discount component contributes zero points at or above supported
 value and scales to its full 40 points at a 30% discount. It remains
 `unavailable`, rather than receiving zero, when no supported valuation exists
-or confidence is below 40. Deal Score v2 is still incomplete and is not used by
-the pipeline or alert logic.
+or confidence is below 40.
+
+The `listing_opportunity` component contributes up to 15 points from listing
+history available on or before the valuation date:
+
+- Up to 9 points for cumulative reduction from the historical peak, with full
+  credit at 15%
+- Up to 4 points for distinct price reductions, with full credit at three
+- 2 points when the latest reduction is within 30 days, 1 point within 90 days
+
+The component is `unavailable` when no valid price history exists. Each score
+component has its own input fingerprint, so unchanged evidence is reused while
+backfilled or changed history produces a new auditable component. Deal Score v2
+is still incomplete and is not used by the pipeline or alert logic.
