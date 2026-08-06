@@ -160,6 +160,15 @@ weight receives neutral credit rather than treating missing data as positive
 momentum. County history older than 180 days, or history with neither usable
 horizon, makes the component unavailable.
 
+The `liquidity_inventory` component contributes up to 10 points from the
+latest county market period. Six points come from an inventory-months proxy
+(`active listings / homes sold`), with full credit at two months or less and
+zero at eight months or more. Four points come from the sold-to-new-listings
+ratio, with zero credit at 0.5 and full credit at 1.0. If one submetric is
+missing, that portion receives neutral credit; missing homes-sold data, both
+inventory inputs missing, or context older than 180 days makes the component
+unavailable.
+
 The opportunity component is also `unavailable` when no valid price history
 exists. Each score component has its own input fingerprint, so unchanged
 evidence is reused while backfilled or changed history produces a new auditable

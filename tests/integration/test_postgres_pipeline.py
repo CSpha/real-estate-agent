@@ -304,12 +304,24 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                     state,
                     period_date,
                     median_sale_price,
+                    homes_sold,
+                    new_listings,
+                    active_listings,
                     median_days_on_market
                 )
                 VALUES
-                    ('Wayne', 'OH', DATE '2025-07-01', 100000, NULL),
-                    ('Wayne', 'OH', DATE '2026-04-01', 108000, NULL),
-                    ('Wayne', 'OH', DATE '2026-07-01', 110000, 20)
+                    (
+                        'Wayne', 'OH', DATE '2025-07-01', 100000,
+                        NULL, NULL, NULL, NULL
+                    ),
+                    (
+                        'Wayne', 'OH', DATE '2026-04-01', 108000,
+                        NULL, NULL, NULL, NULL
+                    ),
+                    (
+                        'Wayne', 'OH', DATE '2026-07-01', 110000,
+                        50, 50, 200, 20
+                    )
                 """
             )
         )
@@ -351,6 +363,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
             "listing_opportunity",
             "days_on_market",
             "market_momentum",
+            "liquidity_inventory",
         }
         assert first_components["listing_opportunity"]["component"][
             "points"
@@ -361,6 +374,9 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert first_components["market_momentum"]["component"][
             "points"
         ] == Decimal("12.56")
+        assert first_components["liquidity_inventory"]["component"][
+            "points"
+        ] == Decimal("8.00")
         assert all(
             not item["component_created"]
             for item in repeated_components.values()
@@ -405,7 +421,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                 conn.scalar(
                     text("SELECT COUNT(*) FROM deal_score_v2_components")
                 )
-                == 8
+                == 10
             )
             stored = conn.execute(
                 text(

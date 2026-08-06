@@ -7,7 +7,7 @@ from typing import Any
 from dateutil.relativedelta import relativedelta
 
 
-SCORING_VERSION = "deal-score-v2-draft-3"
+SCORING_VERSION = "deal-score-v2-draft-4"
 COMPARABLE_DISCOUNT_COMPONENT = "comparable_discount"
 COMPARABLE_DISCOUNT_MAX_POINTS = Decimal("40.00")
 FULL_CREDIT_DISCOUNT = Decimal("0.30")
@@ -48,6 +48,15 @@ MARKET_MOMENTUM_HORIZONS = (
         "reference_tolerance_days": 60,
     },
 )
+
+LIQUIDITY_INVENTORY_COMPONENT = "liquidity_inventory"
+LIQUIDITY_INVENTORY_MAX_POINTS = Decimal("10.00")
+INVENTORY_MONTHS_MAX_POINTS = Decimal("6.00")
+FULL_CREDIT_INVENTORY_MONTHS = Decimal("2.00")
+ZERO_CREDIT_INVENTORY_MONTHS = Decimal("8.00")
+SALES_FLOW_MAX_POINTS = Decimal("4.00")
+ZERO_CREDIT_SALES_TO_NEW_LISTINGS = Decimal("0.50")
+FULL_CREDIT_SALES_TO_NEW_LISTINGS = Decimal("1.00")
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -520,6 +529,144 @@ def calculate_market_momentum_component(
         "status": "available",
         "points": points,
         "max_points": MARKET_MOMENTUM_MAX_POINTS,
+        "reason": reason,
+        "inputs": inputs,
+    }
+
+
+def calculate_liquidity_inventory_component(
+    *,
+    homes_sold: Any,
+    active_listings: Any,
+    new_listings: Any,
+    county_name: str | None,
+    market_period_date: date | None,
+    as_of_date: date,
+) -> dict[str, Any]:
+    sold = _decimal(homes_sold)
+    active = _decimal(active_listings)
+    new = _decimal(new_listings)
+    market_context_age = (
+        (as_of_date - market_period_date).days
+        if market_period_date is not None
+        else None
+    )
+    inputs = {
+        "as_of_date": as_of_date,
+        "county_name": county_name,
+        "market_period_date": market_period_date,
+        "market_context_age_days": market_context_age,
+        "homes_sold": sold,
+        "active_listings": active,
+        "new_listings": new,
+        "thresholds": {
+            "full_credit_inventory_months": FULL_CREDIT_INVENTORY_MONTHS,
+            "zero_credit_inventory_months": ZERO_CREDIT_INVENTORY_MONTHS,
+            "zero_credit_sales_to_new_listings": (
+                ZERO_CREDIT_SALES_TO_NEW_LISTINGS
+            ),
+            "full_credit_sales_to_new_listings": (
+                FULL_CREDIT_SALES_TO_NEW_LISTINGS
+            ),
+            "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
+        },
+    }
+
+    unavailable_reason = None
+    if sold is None or sold <= 0:
+        unavailable_reason = "A positive county homes-sold count is unavailable."
+    elif (
+        market_context_age is None
+        or not 0 <= market_context_age <= MAX_MARKET_CONTEXT_AGE_DAYS
+    ):
+        unavailable_reason = "County liquidity and inventory context is missing or stale."
+    elif (active is None or active < 0) and (new is None or new <= 0):
+        unavailable_reason = (
+            "County active- or new-listing inventory is unavailable."
+        )
+
+    if unavailable_reason is not None:
+        return {
+            "scoring_version": SCORING_VERSION,
+            "component_key": LIQUIDITY_INVENTORY_COMPONENT,
+            "status": "unavailable",
+            "points": None,
+            "max_points": LIQUIDITY_INVENTORY_MAX_POINTS,
+            "reason": unavailable_reason,
+            "inputs": inputs,
+        }
+
+    inventory_months = None
+    inventory_points = None
+    if active is not None and active >= 0:
+        inventory_months = active / sold
+        qualifying_inventory = min(
+            ZERO_CREDIT_INVENTORY_MONTHS,
+            max(FULL_CREDIT_INVENTORY_MONTHS, inventory_months),
+        )
+        inventory_points = (
+            (ZERO_CREDIT_INVENTORY_MONTHS - qualifying_inventory)
+            / (ZERO_CREDIT_INVENTORY_MONTHS - FULL_CREDIT_INVENTORY_MONTHS)
+            * INVENTORY_MONTHS_MAX_POINTS
+        )
+
+    sales_to_new_listings = None
+    sales_flow_points = None
+    if new is not None and new > 0:
+        sales_to_new_listings = sold / new
+        qualifying_sales_flow = min(
+            FULL_CREDIT_SALES_TO_NEW_LISTINGS,
+            max(ZERO_CREDIT_SALES_TO_NEW_LISTINGS, sales_to_new_listings),
+        )
+        sales_flow_points = (
+            (qualifying_sales_flow - ZERO_CREDIT_SALES_TO_NEW_LISTINGS)
+            / (
+                FULL_CREDIT_SALES_TO_NEW_LISTINGS
+                - ZERO_CREDIT_SALES_TO_NEW_LISTINGS
+            )
+            * SALES_FLOW_MAX_POINTS
+        )
+
+    neutral_fill = Decimal("0")
+    if inventory_points is None:
+        neutral_fill += INVENTORY_MONTHS_MAX_POINTS / Decimal("2")
+    if sales_flow_points is None:
+        neutral_fill += SALES_FLOW_MAX_POINTS / Decimal("2")
+    points = (
+        (inventory_points or Decimal("0"))
+        + (sales_flow_points or Decimal("0"))
+        + neutral_fill
+    ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
+
+    inputs["inventory_months"] = inventory_months
+    inputs["sales_to_new_listings"] = sales_to_new_listings
+    inputs["point_contributions"] = {
+        "inventory_months": (
+            inventory_points.quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
+            if inventory_points is not None
+            else None
+        ),
+        "sales_flow": (
+            sales_flow_points.quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
+            if sales_flow_points is not None
+            else None
+        ),
+        "missing_metric_neutral_fill": neutral_fill,
+    }
+    available_metric_count = sum(
+        metric is not None for metric in (inventory_points, sales_flow_points)
+    )
+    reason = (
+        f"{county_name} County liquidity and inventory contribute {points} of "
+        f"{LIQUIDITY_INVENTORY_MAX_POINTS} points using "
+        f"{available_metric_count} of 2 market metrics."
+    )
+    return {
+        "scoring_version": SCORING_VERSION,
+        "component_key": LIQUIDITY_INVENTORY_COMPONENT,
+        "status": "available",
+        "points": points,
+        "max_points": LIQUIDITY_INVENTORY_MAX_POINTS,
         "reason": reason,
         "inputs": inputs,
     }

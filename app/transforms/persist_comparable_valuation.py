@@ -17,6 +17,7 @@ from app.market.comparable_valuation import (
 from app.market.deal_score_v2 import (
     calculate_comparable_discount_component,
     calculate_days_on_market_component,
+    calculate_liquidity_inventory_component,
     calculate_listing_opportunity_component,
     calculate_market_momentum_component,
 )
@@ -199,6 +200,31 @@ COUNTY_MARKET_HISTORY_SQL = text(
     """
 )
 
+COUNTY_LIQUIDITY_SQL = text(
+    """
+    SELECT
+        lookup.county_name,
+        sales.period_date,
+        sales.homes_sold,
+        sales.new_listings,
+        sales.active_listings
+    FROM city_county_lookup lookup
+    JOIN county_sales sales
+      ON LOWER(sales.county_name) = LOWER(lookup.county_name)
+     AND UPPER(sales.state) = UPPER(lookup.state)
+    WHERE LOWER(lookup.city) = LOWER(:city)
+      AND UPPER(lookup.state) = UPPER(:state)
+      AND sales.period_date <= :as_of_date
+      AND sales.homes_sold > 0
+      AND (
+          sales.active_listings >= 0
+          OR sales.new_listings > 0
+      )
+    ORDER BY sales.period_date DESC, sales.id DESC
+    LIMIT 1
+    """
+)
+
 
 def _json_default(value: Any) -> str:
     if isinstance(value, (date, datetime, Decimal)):
@@ -319,6 +345,14 @@ def persist_comparable_valuation(
                 },
             ).mappings()
         ]
+        county_liquidity = connection.execute(
+            COUNTY_LIQUIDITY_SQL,
+            {
+                "city": valuation["subject"]["city"],
+                "state": valuation["subject"]["state"],
+                "as_of_date": valuation["as_of_date"],
+            },
+        ).mappings().one_or_none()
     opportunity_component = calculate_listing_opportunity_component(
         price_history,
         as_of_date=valuation["as_of_date"],
@@ -341,11 +375,28 @@ def persist_comparable_valuation(
         county_market_history,
         as_of_date=valuation["as_of_date"],
     )
+    liquidity_inventory_component = calculate_liquidity_inventory_component(
+        homes_sold=county_liquidity["homes_sold"] if county_liquidity else None,
+        active_listings=(
+            county_liquidity["active_listings"] if county_liquidity else None
+        ),
+        new_listings=(
+            county_liquidity["new_listings"] if county_liquidity else None
+        ),
+        county_name=(
+            county_liquidity["county_name"] if county_liquidity else None
+        ),
+        market_period_date=(
+            county_liquidity["period_date"] if county_liquidity else None
+        ),
+        as_of_date=valuation["as_of_date"],
+    )
     components = [
         discount_component,
         opportunity_component,
         days_on_market_component,
         market_momentum_component,
+        liquidity_inventory_component,
     ]
 
     with engine.begin() as connection:

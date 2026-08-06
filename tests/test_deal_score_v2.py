@@ -6,6 +6,7 @@ import pytest
 from app.market.deal_score_v2 import (
     calculate_comparable_discount_component,
     calculate_days_on_market_component,
+    calculate_liquidity_inventory_component,
     calculate_listing_opportunity_component,
     calculate_market_momentum_component,
 )
@@ -185,7 +186,7 @@ def test_days_on_market_component_scales_against_county_median(
     assert component["status"] == "available"
     assert component["points"] == expected_points
     assert component["max_points"] == Decimal("15.00")
-    assert component["scoring_version"] == "deal-score-v2-draft-3"
+    assert component["scoring_version"] == "deal-score-v2-draft-4"
 
 
 @pytest.mark.parametrize(
@@ -326,3 +327,105 @@ def test_market_momentum_excludes_observations_after_analysis_date():
     assert component["points"] == Decimal("7.50")
     assert component["inputs"]["latest_observation"]["period_date"] == date(2026, 7, 1)
     assert len(component["inputs"]["price_observations"]) == 3
+
+
+@pytest.mark.parametrize(
+    (
+        "homes_sold",
+        "active_listings",
+        "new_listings",
+        "expected_points",
+    ),
+    [
+        (100, 200, 100, Decimal("10.00")),
+        (100, 800, 200, Decimal("0.00")),
+        (75, 375, 100, Decimal("5.00")),
+    ],
+)
+def test_liquidity_inventory_component_scales_both_market_metrics(
+    homes_sold,
+    active_listings,
+    new_listings,
+    expected_points,
+):
+    component = calculate_liquidity_inventory_component(
+        homes_sold=homes_sold,
+        active_listings=active_listings,
+        new_listings=new_listings,
+        county_name="Wayne",
+        market_period_date=date(2026, 7, 1),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == expected_points
+    assert component["max_points"] == Decimal("10.00")
+    assert component["scoring_version"] == "deal-score-v2-draft-4"
+
+
+@pytest.mark.parametrize(
+    (
+        "active_listings",
+        "new_listings",
+        "expected_points",
+        "expected_neutral_fill",
+    ),
+    [
+        (None, 100, Decimal("7.00"), Decimal("3.00")),
+        (200, None, Decimal("8.00"), Decimal("2.00")),
+    ],
+)
+def test_liquidity_inventory_component_neutral_fills_one_missing_metric(
+    active_listings,
+    new_listings,
+    expected_points,
+    expected_neutral_fill,
+):
+    component = calculate_liquidity_inventory_component(
+        homes_sold=100,
+        active_listings=active_listings,
+        new_listings=new_listings,
+        county_name="Wayne",
+        market_period_date=date(2026, 7, 1),
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == expected_points
+    assert component["inputs"]["point_contributions"][
+        "missing_metric_neutral_fill"
+    ] == expected_neutral_fill
+
+
+@pytest.mark.parametrize(
+    (
+        "homes_sold",
+        "active_listings",
+        "new_listings",
+        "market_period_date",
+    ),
+    [
+        (None, 200, 100, date(2026, 7, 1)),
+        (0, 200, 100, date(2026, 7, 1)),
+        (100, None, None, date(2026, 7, 1)),
+        (100, 200, 100, date(2026, 1, 27)),
+        (100, 200, 100, date(2026, 7, 28)),
+    ],
+)
+def test_liquidity_inventory_component_rejects_missing_stale_or_future_data(
+    homes_sold,
+    active_listings,
+    new_listings,
+    market_period_date,
+):
+    component = calculate_liquidity_inventory_component(
+        homes_sold=homes_sold,
+        active_listings=active_listings,
+        new_listings=new_listings,
+        county_name="Wayne",
+        market_period_date=market_period_date,
+        as_of_date=date(2026, 7, 27),
+    )
+
+    assert component["status"] == "unavailable"
+    assert component["points"] is None
