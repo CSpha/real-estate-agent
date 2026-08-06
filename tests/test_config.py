@@ -30,3 +30,11 @@ def test_database_url_override_takes_precedence(monkeypatch):
 
     assert get_settings().sqlalchemy_database_url == override
     get_settings.cache_clear()
+
+
+def test_rentcast_api_key_is_loaded_from_environment(monkeypatch):
+    monkeypatch.setenv("RENTCAST_API_KEY", "test-rentcast-key")
+    get_settings.cache_clear()
+
+    assert get_settings().rentcast_api_key == "test-rentcast-key"
+    get_settings.cache_clear()

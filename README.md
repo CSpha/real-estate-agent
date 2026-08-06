@@ -34,6 +34,13 @@ For Slack alerts, add:
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 ```
 
+For the optional RentCast listing provider, first activate a RentCast API plan
+(the Developer plan includes a small free request allowance), then add:
+
+```env
+RENTCAST_API_KEY=...
+```
+
 For AI investment analyses, add an OpenAI API key. The model is configurable:
 
 ```env
@@ -85,6 +92,30 @@ decision of `approved`, `rejected`, or `corrected`. Corrected decisions require
 a `corrections` JSON object, making reviewed cases reusable as regression data.
 
 ## Workflows
+
+Run a bounded, read-only RentCast coverage audit for the Wayne County pilot:
+
+```powershell
+python -m app.providers.audit_rentcast
+```
+
+The default audit makes three requests for Wooster, Orrville, and Rittman. It
+prints only aggregate coverage and field-completeness information; it neither
+prints addresses or agent contacts nor stores listing records.
+
+After reviewing coverage, intentionally ingest one page of active listings:
+
+```powershell
+python -m app.providers.sync --provider rentcast `
+  --city Wooster --state OH --page-size 100
+```
+
+RentCast is a commercial aggregation API, not a direct MLS feed. Confirm its
+current usage and retention terms before production use. Its public API terms
+currently permit internal research, analytics, derivative work, and storage in
+internal systems, subject to their restrictions and any applicable third-party
+data terms. Review the [RentCast API terms](https://www.rentcast.io/terms-api)
+before enabling recurring ingestion.
 
 Load sample listings:
 

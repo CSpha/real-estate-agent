@@ -8,6 +8,7 @@ from sqlalchemy import Engine, text
 from app.ingest.load_sample_listings import ingest_records
 from app.providers.base import ProviderAdapter, ProviderSyncResult
 from app.providers.fixture import FixtureProvider
+from app.providers.rentcast import RentCastProvider
 from app.utils.db import get_engine
 
 
@@ -90,11 +91,24 @@ def sync_provider(provider: ProviderAdapter, *, engine: Engine | None = None) ->
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sync a provider adapter into the listings tables.")
-    parser.add_argument("--provider", choices=["fixture"], default="fixture")
+    parser.add_argument(
+        "--provider",
+        choices=["fixture", "rentcast"],
+        default="fixture",
+    )
+    parser.add_argument("--city", default="Wooster")
+    parser.add_argument("--state", default="OH")
+    parser.add_argument("--page-size", type=int, default=100)
     args = parser.parse_args()
 
     if args.provider == "fixture":
         provider = FixtureProvider()
+    elif args.provider == "rentcast":
+        provider = RentCastProvider(
+            city=args.city,
+            state=args.state,
+            page_size=args.page_size,
+        )
     else:
         raise ValueError(f"Unsupported provider: {args.provider}")
 

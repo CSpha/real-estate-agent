@@ -38,14 +38,20 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
 - Versioned saved searches with validated, explainable criteria evaluation
 - Stable listing/search event fingerprints and persisted match transitions
 - A PostgreSQL-backed price-drop alert outbox with atomic worker claims, retries, and visible permanent failures
+- A RentCast active-sale-listing adapter with bounded pagination, normalized
+  fields, secret-header authentication, and a read-only coverage audit
 
-The application is still not connected to a live listing provider. The primary pipeline still loads sample data from `data/sample_listings.csv`.
+The primary pipeline still loads sample data from `data/sample_listings.csv`.
+The RentCast adapter is implemented, but live ingestion remains disabled until
+the API subscription is active, local coverage is reviewed, and usage and
+retention terms are accepted.
 
 ## Near-term priorities
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Add a live provider adapter and replace the sample-data-only pipeline path.
+1. Complete the RentCast coverage audit, document its data terms, and run the
+   adapter in shadow mode before replacing the sample-data-only pipeline path.
 2. Add a documented migration path for existing prototype databases so they can be reconciled with the Alembic baseline.
 3. Finish wiring the pipeline so county-market data and potential-deal alert queueing run consistently in the same flow.
 4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.
@@ -184,7 +190,11 @@ Local validation completed:
 
 ### Provider decision
 
-Before implementation, select the target geography and obtain authorized access from an MLS, broker, or listing-data vendor. Prefer a RESO Web API-compatible provider. Do not scrape consumer listing sites unless their terms and an explicit agreement authorize it.
+Wayne County, Ohio is the pilot geography. A RentCast adapter and bounded,
+read-only coverage audit are implemented as the initial non-MLS route. Keep a
+direct MLS Now/Trestle feed as the preferred long-term option if a broker
+relationship becomes available. Do not scrape consumer listing sites unless
+their terms and an explicit agreement authorize it.
 
 ### Work
 
