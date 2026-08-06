@@ -16,7 +16,9 @@ from app.market.comparable_valuation import (
 )
 from app.market.deal_score_v2 import (
     calculate_comparable_discount_component,
+    calculate_data_confidence_component,
     calculate_days_on_market_component,
+    calculate_deal_score_v2,
     calculate_liquidity_inventory_component,
     calculate_listing_opportunity_component,
     calculate_market_momentum_component,
@@ -197,6 +199,54 @@ COUNTY_MARKET_HISTORY_SQL = text(
       AND sales.period_date <= :as_of_date
       AND sales.median_sale_price > 0
     ORDER BY sales.period_date, sales.id
+    """
+)
+
+SCORE_INSERT_SQL = text(
+    """
+    INSERT INTO deal_score_v2_scores (
+        valuation_id,
+        scoring_version,
+        input_fingerprint,
+        status,
+        total_points,
+        available_points,
+        available_max_points,
+        coverage_pct,
+        normalized_available_score,
+        reason,
+        calculation_json
+    )
+    VALUES (
+        :valuation_id,
+        :scoring_version,
+        :score_input_fingerprint,
+        :status,
+        :total_points,
+        :available_points,
+        :available_max_points,
+        :coverage_pct,
+        :normalized_available_score,
+        :reason,
+        CAST(:calculation_json AS JSONB)
+    )
+    ON CONFLICT (
+        valuation_id,
+        scoring_version,
+        input_fingerprint
+    )
+    DO NOTHING
+    RETURNING id, created_at
+    """
+)
+
+SCORE_SELECT_SQL = text(
+    """
+    SELECT id, created_at
+    FROM deal_score_v2_scores
+    WHERE valuation_id = :valuation_id
+      AND scoring_version = :scoring_version
+      AND input_fingerprint = :score_input_fingerprint
     """
 )
 
@@ -391,13 +441,18 @@ def persist_comparable_valuation(
         ),
         as_of_date=valuation["as_of_date"],
     )
-    components = [
+    substantive_components = [
         discount_component,
         opportunity_component,
         days_on_market_component,
         market_momentum_component,
         liquidity_inventory_component,
     ]
+    confidence_component = calculate_data_confidence_component(
+        valuation,
+        substantive_components,
+    )
+    components = [*substantive_components, confidence_component]
 
     with engine.begin() as connection:
         valuation_record, valuation_created = _insert_or_find(
@@ -439,6 +494,37 @@ def persist_comparable_valuation(
                 }
             )
 
+        deal_score = calculate_deal_score_v2(components)
+        deal_score["inputs"]["component_fingerprints"] = {
+            item["component"]["component_key"]: item["input_fingerprint"]
+            for item in persisted_components
+        }
+        score_json = _canonical_json(deal_score)
+        score_input_fingerprint = hashlib.sha256(
+            score_json.encode("utf-8")
+        ).hexdigest()
+        score_parameters = {
+            "valuation_id": valuation_record["id"],
+            "scoring_version": deal_score["scoring_version"],
+            "score_input_fingerprint": score_input_fingerprint,
+            "status": deal_score["status"],
+            "total_points": deal_score["total_points"],
+            "available_points": deal_score["available_points"],
+            "available_max_points": deal_score["available_max_points"],
+            "coverage_pct": deal_score["coverage_pct"],
+            "normalized_available_score": deal_score[
+                "normalized_available_score"
+            ],
+            "reason": deal_score["reason"],
+            "calculation_json": score_json,
+        }
+        score_record, score_created = _insert_or_find(
+            connection,
+            SCORE_INSERT_SQL,
+            SCORE_SELECT_SQL,
+            score_parameters,
+        )
+
     discount_persistence = persisted_components[0]
 
     result = {
@@ -452,13 +538,19 @@ def persist_comparable_valuation(
         "valuation": valuation,
         "deal_score_v2_component": discount_component,
         "deal_score_v2_components": persisted_components,
+        "deal_score_v2_id": score_record["id"],
+        "deal_score_v2_created": score_created,
+        "deal_score_v2_created_at": score_record["created_at"],
+        "deal_score_v2_input_fingerprint": score_input_fingerprint,
+        "deal_score_v2": deal_score,
     }
     print(
         "Comparable valuation persistence complete: "
         f"valuation_id={result['valuation_id']} "
         f"({'created' if valuation_created else 'reused'}), "
         f"{sum(item['component_created'] for item in persisted_components)} "
-        f"of {len(persisted_components)} component(s) created."
+        f"of {len(persisted_components)} component(s) created; "
+        f"aggregate {'created' if score_created else 'reused'}."
     )
     return result
 

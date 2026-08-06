@@ -1,6 +1,6 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: August 4, 2026
+Last reviewed: August 6, 2026
 
 ## Goal
 
@@ -25,6 +25,8 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
   median sale-price changes over 3 and 12 months
 - A versioned 10-point liquidity-and-inventory component using county sales
   velocity, active inventory, and new-listing flow
+- A versioned 5-point data-confidence component and an immutable 100-point
+  aggregate that distinguishes complete, partial, and unavailable results
 - Idempotent sample ingestion and change-aware listing history
 - One authoritative county-level market scoring implementation
 - Mortgage-rate outlook and backtest analysis modules with signal-based scoring
@@ -302,10 +304,10 @@ The property-level comparable-sales schema, CSV importer, deterministic
 selection tiers, and comparable valuation with confidence scoring are
 implemented. Immutable valuation persistence, the comparable-discount
 component, listing-opportunity component, days-on-market component, and
-market-momentum component, and liquidity-and-inventory component are also
-implemented. Confidence aggregation, backfill, and activation remain planned.
-Deal Score v2 must not replace the current score until those remaining inputs
-and tests are complete.
+market-momentum component, liquidity-and-inventory component, data-confidence
+component, and immutable 100-point aggregation are also implemented. Backfill,
+output review, and activation remain planned. Deal Score v2 must not replace
+the current score until those rollout steps are complete.
 
 ### Proposed Deal Score v2
 
@@ -336,6 +338,12 @@ sold-to-new-listings ratio. The inventory proxy receives full credit at two
 months or less and zero at eight months or more. The sales-flow ratio receives
 full credit at 1.0 and zero at 0.5. Missing submetrics receive neutral weighted
 credit, while stale or wholly insufficient context remains unavailable.
+
+The implemented data-confidence component uses 3 points for comparable quality
+and 2 points for coverage of the other 95 score points. The aggregate publishes
+a final score only when all six components are available. Partial calculations
+retain available points, coverage, and a normalized available-evidence score
+without presenting that normalization as the final Deal Score v2.
 
 ### Comparable selection
 

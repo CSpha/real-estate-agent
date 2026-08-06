@@ -347,6 +347,12 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert repeated["component_id"] == first["component_id"]
         assert repeated["valuation_created_at"] == first["valuation_created_at"]
         assert repeated["component_created_at"] == first["component_created_at"]
+        assert first["deal_score_v2_created"] is True
+        assert repeated["deal_score_v2_created"] is False
+        assert repeated["deal_score_v2_id"] == first["deal_score_v2_id"]
+        assert repeated["deal_score_v2_created_at"] == first[
+            "deal_score_v2_created_at"
+        ]
         assert first["deal_score_v2_component"]["status"] == "available"
         assert first["deal_score_v2_component"]["points"] == Decimal("6.01")
 
@@ -364,6 +370,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
             "days_on_market",
             "market_momentum",
             "liquidity_inventory",
+            "data_confidence",
         }
         assert first_components["listing_opportunity"]["component"][
             "points"
@@ -377,6 +384,12 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert first_components["liquidity_inventory"]["component"][
             "points"
         ] == Decimal("8.00")
+        assert first_components["data_confidence"]["component"][
+            "points"
+        ] == Decimal("3.91")
+        assert first["deal_score_v2"]["status"] == "complete"
+        assert first["deal_score_v2"]["total_points"] == Decimal("57.82")
+        assert first["deal_score_v2"]["coverage_pct"] == Decimal("100.00")
         assert all(
             not item["component_created"]
             for item in repeated_components.values()
@@ -407,7 +420,9 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         )
         assert changed["valuation_created"] is True
         assert changed["component_created"] is True
+        assert changed["deal_score_v2_created"] is True
         assert changed["valuation_id"] != first["valuation_id"]
+        assert changed["deal_score_v2_id"] != first["deal_score_v2_id"]
         assert changed["input_fingerprint"] != first["input_fingerprint"]
 
         with postgres_engine.connect() as conn:
@@ -421,7 +436,11 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
                 conn.scalar(
                     text("SELECT COUNT(*) FROM deal_score_v2_components")
                 )
-                == 10
+                == 12
+            )
+            assert (
+                conn.scalar(text("SELECT COUNT(*) FROM deal_score_v2_scores"))
+                == 2
             )
             stored = conn.execute(
                 text(
@@ -441,6 +460,30 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
             assert stored.points == Decimal("6.01")
             assert stored.max_points == Decimal("40.00")
             assert len(stored.input_fingerprint) == 64
+            stored_score = conn.execute(
+                text(
+                    """
+                    SELECT
+                        status,
+                        total_points,
+                        coverage_pct,
+                        input_fingerprint,
+                        calculation_json
+                    FROM deal_score_v2_scores
+                    WHERE id = :score_id
+                    """
+                ),
+                {"score_id": first["deal_score_v2_id"]},
+            ).one()
+            assert stored_score.status == "complete"
+            assert stored_score.total_points == Decimal("57.82")
+            assert stored_score.coverage_pct == Decimal("100.00")
+            assert len(stored_score.input_fingerprint) == 64
+            assert set(
+                stored_score.calculation_json["inputs"][
+                    "component_fingerprints"
+                ]
+            ) == set(first_components)
     finally:
         with postgres_engine.begin() as conn:
             conn.execute(

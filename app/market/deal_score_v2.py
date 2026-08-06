@@ -7,7 +7,7 @@ from typing import Any
 from dateutil.relativedelta import relativedelta
 
 
-SCORING_VERSION = "deal-score-v2-draft-4"
+SCORING_VERSION = "deal-score-v2-draft-5"
 COMPARABLE_DISCOUNT_COMPONENT = "comparable_discount"
 COMPARABLE_DISCOUNT_MAX_POINTS = Decimal("40.00")
 FULL_CREDIT_DISCOUNT = Decimal("0.30")
@@ -57,6 +57,26 @@ ZERO_CREDIT_INVENTORY_MONTHS = Decimal("8.00")
 SALES_FLOW_MAX_POINTS = Decimal("4.00")
 ZERO_CREDIT_SALES_TO_NEW_LISTINGS = Decimal("0.50")
 FULL_CREDIT_SALES_TO_NEW_LISTINGS = Decimal("1.00")
+
+DATA_CONFIDENCE_COMPONENT = "data_confidence"
+DATA_CONFIDENCE_MAX_POINTS = Decimal("5.00")
+COMPARABLE_CONFIDENCE_MAX_POINTS = Decimal("3.00")
+EVIDENCE_COVERAGE_MAX_POINTS = Decimal("2.00")
+SUBSTANTIVE_COMPONENT_MAX_POINTS = {
+    COMPARABLE_DISCOUNT_COMPONENT: COMPARABLE_DISCOUNT_MAX_POINTS,
+    LISTING_OPPORTUNITY_COMPONENT: LISTING_OPPORTUNITY_MAX_POINTS,
+    DAYS_ON_MARKET_COMPONENT: DAYS_ON_MARKET_MAX_POINTS,
+    MARKET_MOMENTUM_COMPONENT: MARKET_MOMENTUM_MAX_POINTS,
+    LIQUIDITY_INVENTORY_COMPONENT: LIQUIDITY_INVENTORY_MAX_POINTS,
+}
+DEAL_SCORE_COMPONENT_MAX_POINTS = {
+    **SUBSTANTIVE_COMPONENT_MAX_POINTS,
+    DATA_CONFIDENCE_COMPONENT: DATA_CONFIDENCE_MAX_POINTS,
+}
+DEAL_SCORE_MAX_POINTS = sum(
+    DEAL_SCORE_COMPONENT_MAX_POINTS.values(),
+    Decimal("0"),
+)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -669,4 +689,195 @@ def calculate_liquidity_inventory_component(
         "max_points": LIQUIDITY_INVENTORY_MAX_POINTS,
         "reason": reason,
         "inputs": inputs,
+    }
+
+
+def calculate_data_confidence_component(
+    valuation: dict[str, Any],
+    substantive_components: list[dict[str, Any]],
+) -> dict[str, Any]:
+    comparable_confidence = _decimal(valuation.get("confidence_score"))
+    components_by_key = {
+        component["component_key"]: component
+        for component in substantive_components
+        if component.get("component_key") in SUBSTANTIVE_COMPONENT_MAX_POINTS
+    }
+    available_max_points = sum(
+        (
+            max_points
+            for key, max_points in SUBSTANTIVE_COMPONENT_MAX_POINTS.items()
+            if components_by_key.get(key, {}).get("status") == "available"
+            and components_by_key[key].get("points") is not None
+        ),
+        Decimal("0"),
+    )
+    substantive_max_points = sum(
+        SUBSTANTIVE_COMPONENT_MAX_POINTS.values(),
+        Decimal("0"),
+    )
+    coverage_ratio = available_max_points / substantive_max_points
+    inputs = {
+        "valuation_confidence_score": comparable_confidence,
+        "valuation_confidence_label": valuation.get("confidence_label"),
+        "valuation_confidence_components": valuation.get(
+            "confidence_components"
+        ),
+        "available_substantive_max_points": available_max_points,
+        "substantive_max_points": substantive_max_points,
+        "coverage_ratio": coverage_ratio,
+        "component_statuses": {
+            key: components_by_key.get(key, {}).get("status", "missing")
+            for key in SUBSTANTIVE_COMPONENT_MAX_POINTS
+        },
+        "weights": {
+            "comparable_quality_max_points": (
+                COMPARABLE_CONFIDENCE_MAX_POINTS
+            ),
+            "evidence_coverage_max_points": EVIDENCE_COVERAGE_MAX_POINTS,
+        },
+    }
+    if (
+        comparable_confidence is None
+        or comparable_confidence < 0
+        or comparable_confidence > 100
+    ):
+        return {
+            "scoring_version": SCORING_VERSION,
+            "component_key": DATA_CONFIDENCE_COMPONENT,
+            "status": "unavailable",
+            "points": None,
+            "max_points": DATA_CONFIDENCE_MAX_POINTS,
+            "reason": "A valid comparable-valuation confidence score is unavailable.",
+            "inputs": inputs,
+        }
+
+    comparable_quality_points = (
+        comparable_confidence
+        / Decimal("100")
+        * COMPARABLE_CONFIDENCE_MAX_POINTS
+    )
+    evidence_coverage_points = coverage_ratio * EVIDENCE_COVERAGE_MAX_POINTS
+    points = (comparable_quality_points + evidence_coverage_points).quantize(
+        POINTS_QUANTUM,
+        rounding=ROUND_HALF_UP,
+    )
+    inputs["point_contributions"] = {
+        "comparable_quality": comparable_quality_points.quantize(
+            POINTS_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        ),
+        "evidence_coverage": evidence_coverage_points.quantize(
+            POINTS_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        ),
+    }
+    return {
+        "scoring_version": SCORING_VERSION,
+        "component_key": DATA_CONFIDENCE_COMPONENT,
+        "status": "available",
+        "points": points,
+        "max_points": DATA_CONFIDENCE_MAX_POINTS,
+        "reason": (
+            f"Data confidence contributes {points} of "
+            f"{DATA_CONFIDENCE_MAX_POINTS} points from comparable quality "
+            f"and {coverage_ratio * 100:.2f}% evidence coverage."
+        ),
+        "inputs": inputs,
+    }
+
+
+def calculate_deal_score_v2(
+    components: list[dict[str, Any]],
+) -> dict[str, Any]:
+    components_by_key: dict[str, dict[str, Any]] = {}
+    for component in components:
+        key = component.get("component_key")
+        if key not in DEAL_SCORE_COMPONENT_MAX_POINTS:
+            raise ValueError(f"Unexpected Deal Score v2 component: {key}")
+        if key in components_by_key:
+            raise ValueError(f"Duplicate Deal Score v2 component: {key}")
+        if component.get("scoring_version") != SCORING_VERSION:
+            raise ValueError(f"Component {key} uses a different scoring version")
+        if _decimal(component.get("max_points")) != (
+            DEAL_SCORE_COMPONENT_MAX_POINTS[key]
+        ):
+            raise ValueError(f"Component {key} has an unexpected maximum")
+        components_by_key[key] = component
+
+    component_summaries = {}
+    available_points = Decimal("0")
+    available_max_points = Decimal("0")
+    missing_components = []
+    for key, max_points in DEAL_SCORE_COMPONENT_MAX_POINTS.items():
+        component = components_by_key.get(key)
+        status = component.get("status") if component else "missing"
+        points = _decimal(component.get("points")) if component else None
+        if status == "available" and points is not None:
+            if not 0 <= points <= max_points:
+                raise ValueError(f"Component {key} points are outside its range")
+            available_points += points
+            available_max_points += max_points
+        else:
+            missing_components.append(key)
+        component_summaries[key] = {
+            "status": status,
+            "points": points,
+            "max_points": max_points,
+            "reason": component.get("reason") if component else "Component is missing.",
+        }
+
+    coverage_pct = (
+        available_max_points / DEAL_SCORE_MAX_POINTS * Decimal("100")
+    ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
+    normalized_available_score = (
+        (available_points / available_max_points * Decimal("100")).quantize(
+            POINTS_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        if available_max_points > 0
+        else None
+    )
+    core_component = components_by_key.get(COMPARABLE_DISCOUNT_COMPONENT)
+    core_available = (
+        core_component is not None
+        and core_component.get("status") == "available"
+        and core_component.get("points") is not None
+    )
+    if not core_available:
+        status = "unavailable"
+        total_points = None
+        reason = "Deal Score v2 is unavailable without comparable-discount evidence."
+    elif missing_components:
+        status = "partial"
+        total_points = None
+        reason = (
+            "Deal Score v2 is partial because these components are unavailable: "
+            + ", ".join(missing_components)
+            + "."
+        )
+    else:
+        status = "complete"
+        total_points = available_points.quantize(
+            POINTS_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+        reason = f"Complete Deal Score v2 is {total_points} of {DEAL_SCORE_MAX_POINTS}."
+
+    return {
+        "scoring_version": SCORING_VERSION,
+        "status": status,
+        "total_points": total_points,
+        "max_points": DEAL_SCORE_MAX_POINTS,
+        "available_points": available_points.quantize(
+            POINTS_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        ),
+        "available_max_points": available_max_points,
+        "coverage_pct": coverage_pct,
+        "normalized_available_score": normalized_available_score,
+        "missing_components": missing_components,
+        "reason": reason,
+        "inputs": {
+            "components": component_summaries,
+        },
     }

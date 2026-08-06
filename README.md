@@ -130,7 +130,9 @@ python -m app.transforms.persist_comparable_valuation sample_feed 1001 `
 by its input fingerprint. An unchanged rerun reuses the existing row and
 timestamp; changed listing or comparable inputs create a new auditable
 snapshot. `deal_score_v2_components` stores the versioned
-component results linked to that valuation.
+component results linked to that valuation. `deal_score_v2_scores` stores the
+corresponding immutable aggregate and the fingerprints of the exact component
+rows used to calculate it.
 
 The comparable-discount component contributes zero points at or above supported
 value and scales to its full 40 points at a 30% discount. It remains
@@ -169,8 +171,19 @@ missing, that portion receives neutral credit; missing homes-sold data, both
 inventory inputs missing, or context older than 180 days makes the component
 unavailable.
 
+The `data_confidence` component contributes the final 5 points: up to 3 points
+from comparable-valuation confidence and up to 2 points from coverage of the
+other 95 score points.
+
+The aggregate publishes `total_points` only when all six components are
+available. A missing non-core component produces a `partial` result with
+available points, coverage, and a normalized available-evidence score kept
+separate from the final total. Missing comparable-discount evidence makes the
+aggregate `unavailable`.
+
 The opportunity component is also `unavailable` when no valid price history
 exists. Each score component has its own input fingerprint, so unchanged
 evidence is reused while backfilled or changed history produces a new auditable
-component. Deal Score v2 is still incomplete and is not used by the pipeline or
-alert logic.
+component. The Deal Score v2 calculation and persistence model is complete but
+is not yet used by the pipeline or alert logic; backfill and activation review
+remain separate steps.

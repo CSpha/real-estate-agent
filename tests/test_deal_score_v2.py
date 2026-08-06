@@ -4,7 +4,10 @@ from decimal import Decimal
 import pytest
 
 from app.market.deal_score_v2 import (
+    DEAL_SCORE_COMPONENT_MAX_POINTS,
     calculate_comparable_discount_component,
+    calculate_data_confidence_component,
+    calculate_deal_score_v2,
     calculate_days_on_market_component,
     calculate_liquidity_inventory_component,
     calculate_listing_opportunity_component,
@@ -186,7 +189,7 @@ def test_days_on_market_component_scales_against_county_median(
     assert component["status"] == "available"
     assert component["points"] == expected_points
     assert component["max_points"] == Decimal("15.00")
-    assert component["scoring_version"] == "deal-score-v2-draft-4"
+    assert component["scoring_version"] == "deal-score-v2-draft-5"
 
 
 @pytest.mark.parametrize(
@@ -360,7 +363,7 @@ def test_liquidity_inventory_component_scales_both_market_metrics(
     assert component["status"] == "available"
     assert component["points"] == expected_points
     assert component["max_points"] == Decimal("10.00")
-    assert component["scoring_version"] == "deal-score-v2-draft-4"
+    assert component["scoring_version"] == "deal-score-v2-draft-5"
 
 
 @pytest.mark.parametrize(
@@ -429,3 +432,126 @@ def test_liquidity_inventory_component_rejects_missing_stale_or_future_data(
 
     assert component["status"] == "unavailable"
     assert component["points"] is None
+
+
+def _score_component(key, points=None, *, status="available"):
+    max_points = DEAL_SCORE_COMPONENT_MAX_POINTS[key]
+    return {
+        "scoring_version": "deal-score-v2-draft-5",
+        "component_key": key,
+        "status": status,
+        "points": max_points if points is None and status == "available" else points,
+        "max_points": max_points,
+        "reason": f"{key} test result",
+        "inputs": {},
+    }
+
+
+def _substantive_score_components(*, unavailable_key=None):
+    return [
+        _score_component(
+            key,
+            None,
+            status="unavailable" if key == unavailable_key else "available",
+        )
+        for key in DEAL_SCORE_COMPONENT_MAX_POINTS
+        if key != "data_confidence"
+    ]
+
+
+def test_data_confidence_blends_comparable_quality_and_evidence_coverage():
+    component = calculate_data_confidence_component(
+        {
+            "confidence_score": Decimal("63.8"),
+            "confidence_label": "medium",
+            "confidence_components": {"sample_size_points": Decimal("18")},
+        },
+        _substantive_score_components(),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == Decimal("3.91")
+    assert component["inputs"]["point_contributions"] == {
+        "comparable_quality": Decimal("1.91"),
+        "evidence_coverage": Decimal("2.00"),
+    }
+    assert component["inputs"]["coverage_ratio"] == Decimal("1")
+
+
+def test_data_confidence_reduces_points_for_missing_evidence():
+    component = calculate_data_confidence_component(
+        {"confidence_score": Decimal("50"), "confidence_label": "low"},
+        _substantive_score_components(unavailable_key="market_momentum"),
+    )
+
+    assert component["status"] == "available"
+    assert component["points"] == Decimal("3.18")
+    assert component["inputs"]["available_substantive_max_points"] == Decimal(
+        "80.00"
+    )
+
+
+def test_data_confidence_is_unavailable_without_valid_valuation_confidence():
+    component = calculate_data_confidence_component(
+        {"confidence_score": None},
+        _substantive_score_components(),
+    )
+
+    assert component["status"] == "unavailable"
+    assert component["points"] is None
+
+
+def test_deal_score_v2_aggregates_all_six_components():
+    components = [
+        _score_component("comparable_discount", Decimal("20.00")),
+        _score_component("listing_opportunity", Decimal("10.00")),
+        _score_component("days_on_market", Decimal("5.00")),
+        _score_component("market_momentum", Decimal("7.50")),
+        _score_component("liquidity_inventory", Decimal("8.00")),
+        _score_component("data_confidence", Decimal("4.00")),
+    ]
+
+    score = calculate_deal_score_v2(components)
+
+    assert score["status"] == "complete"
+    assert score["total_points"] == Decimal("54.50")
+    assert score["available_points"] == Decimal("54.50")
+    assert score["available_max_points"] == Decimal("100.00")
+    assert score["coverage_pct"] == Decimal("100.00")
+    assert score["normalized_available_score"] == Decimal("54.50")
+    assert score["missing_components"] == []
+
+
+def test_deal_score_v2_keeps_partial_score_separate_from_final_total():
+    components = _substantive_score_components(
+        unavailable_key="market_momentum"
+    )
+    components.append(_score_component("data_confidence", Decimal("3.18")))
+
+    score = calculate_deal_score_v2(components)
+
+    assert score["status"] == "partial"
+    assert score["total_points"] is None
+    assert score["available_max_points"] == Decimal("85.00")
+    assert score["coverage_pct"] == Decimal("85.00")
+    assert score["missing_components"] == ["market_momentum"]
+
+
+def test_deal_score_v2_requires_comparable_discount_evidence():
+    components = _substantive_score_components(
+        unavailable_key="comparable_discount"
+    )
+    components.append(_score_component("data_confidence", Decimal("3.00")))
+
+    score = calculate_deal_score_v2(components)
+
+    assert score["status"] == "unavailable"
+    assert score["total_points"] is None
+    assert score["missing_components"] == ["comparable_discount"]
+
+
+def test_deal_score_v2_rejects_duplicate_components():
+    component = _score_component("comparable_discount", Decimal("20.00"))
+
+    with pytest.raises(ValueError, match="Duplicate"):
+        calculate_deal_score_v2([component, component])
