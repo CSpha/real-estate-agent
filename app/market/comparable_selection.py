@@ -13,7 +13,7 @@ from sqlalchemy import Connection, Engine, text
 from app.db import get_engine
 
 
-SELECTION_VERSION = "comparable-selection-v1"
+SELECTION_VERSION = "comparable-selection-v2"
 
 
 @dataclass(frozen=True)
@@ -129,15 +129,18 @@ def _candidate_sql(geography: str) -> Any:
           )
           AND (
               :subject_beds IS NULL
+              OR sale.beds IS NULL
               OR ABS(sale.beds - :subject_beds) <= :bed_tolerance
           )
           AND (
               :subject_baths IS NULL
+              OR sale.baths IS NULL
               OR ABS(sale.baths - :subject_baths) <= :bath_tolerance
           )
           AND (
               :lot_tolerance IS NULL
               OR :subject_lot IS NULL
+              OR sale.lot_size_acres IS NULL
               OR sale.lot_size_acres BETWEEN
                   GREATEST(0, :subject_lot * (1 - :lot_tolerance))
                   AND :subject_lot * (1 + :lot_tolerance)
@@ -326,6 +329,14 @@ def select_comparables(
             selected_tier = tier
             if total_count >= min_comps:
                 break
+
+        for field in ("beds", "baths", "lot_size_acres"):
+            if (
+                field not in criteria_not_applied
+                and selected_candidates
+                and all(candidate[field] is None for candidate in selected_candidates)
+            ):
+                criteria_not_applied.append(field)
 
     return {
         "selection_version": SELECTION_VERSION,

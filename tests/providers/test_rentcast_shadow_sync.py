@@ -59,6 +59,12 @@ def test_shadow_sync_excludes_land_from_scoring_but_keeps_missing_sqft(monkeypat
                 "sqft": None,
             },
             {
+                "id": "manufactured",
+                "county": "Wayne",
+                "property_type": "Manufactured",
+                "sqft": Decimal("1100"),
+            },
+            {
                 "id": "outside-county",
                 "county": "Stark",
                 "property_type": "Single Family",
@@ -99,10 +105,11 @@ def test_shadow_sync_excludes_land_from_scoring_but_keeps_missing_sqft(monkeypat
         provider_factory=lambda city: FakeProvider(records_by_city[city]),
     )
 
-    assert result.returned_count == 5
-    assert result.county_count == 4
-    assert result.unique_county_count == 3
-    assert result.excluded_land_count == 1
+    assert result.returned_count == 6
+    assert result.county_count == 5
+    assert result.unique_county_count == 4
+    assert result.excluded_count == 2
+    assert result.review_count == 2
     assert result.scoring_eligible_count == 2
     assert result.missing_sqft_count == 1
     assert result.alert_eligible is False
@@ -111,6 +118,7 @@ def test_shadow_sync_excludes_land_from_scoring_but_keeps_missing_sqft(monkeypat
         "home-with-sqft",
         "home-without-sqft",
         "land",
+        "manufactured",
     }
     assert {record["source_listing_id"] for record in captured["eligible"]} == {
         "home-with-sqft",
@@ -119,9 +127,21 @@ def test_shadow_sync_excludes_land_from_scoring_but_keeps_missing_sqft(monkeypat
 
 
 def test_scoring_eligibility_is_neutral_for_missing_square_footage():
+    base = {
+        "address": "123 Main St",
+        "city": "Wooster",
+        "state": "OH",
+        "zip": "44691",
+        "list_price": 200000,
+        "status": "Active",
+        "sqft": None,
+    }
     assert shadow_module.is_scoring_eligible(
-        {"property_type": "Single Family", "sqft": None}
+        {**base, "property_type": "Single Family"}
     )
     assert not shadow_module.is_scoring_eligible(
-        {"property_type": "land", "sqft": None}
+        {**base, "property_type": "land"}
+    )
+    assert not shadow_module.is_scoring_eligible(
+        {**base, "property_type": "Manufactured", "sqft": 1200}
     )

@@ -316,9 +316,25 @@ def load_comparable_sales(
         .where(pd.notnull(df[selected_columns]), None)
     )
     records = clean_df.to_dict(orient="records")
+    counts = ingest_comparable_records(records, engine=engine)
+    print(
+        "Comparable sales load complete: "
+        f"{counts['received']} received, "
+        f"{counts['raw_inserted']} new raw payload(s), "
+        f"{counts['current_changed']} current sale(s) inserted or changed."
+    )
+    return counts
+
+
+def ingest_comparable_records(
+    records: list[dict[str, Any]],
+    *,
+    engine: Engine | None = None,
+) -> dict[str, int]:
+    """Normalize and idempotently store in-memory comparable-sale records."""
+
     raw_records = [_prepare_raw_record(record) for record in records]
     normalized_records = [normalize_comparable_sale(record) for record in records]
-
     engine = engine or get_engine()
     with engine.begin() as conn:
         raw_result = conn.execute(RAW_INSERT_SQL, raw_records)
@@ -329,12 +345,6 @@ def load_comparable_sales(
         "raw_inserted": max(raw_result.rowcount, 0),
         "current_changed": max(current_result.rowcount, 0),
     }
-    print(
-        "Comparable sales load complete: "
-        f"{counts['received']} received, "
-        f"{counts['raw_inserted']} new raw payload(s), "
-        f"{counts['current_changed']} current sale(s) inserted or changed."
-    )
     return counts
 
 

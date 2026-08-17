@@ -6,7 +6,7 @@ from typing import Any, Callable
 from sqlalchemy import Engine
 
 from app.ingest.load_sample_listings import ingest_records
-from app.normalization import normalize_property_type
+from app.market.listing_eligibility import evaluate_listing_eligibility
 from app.providers.rentcast import RentCastProvider
 from app.transforms.score_listings_against_market import (
     score_listings_against_market,
@@ -27,7 +27,8 @@ class RentCastShadowSyncResult:
     returned_count: int
     county_count: int
     unique_county_count: int
-    excluded_land_count: int
+    excluded_count: int
+    review_count: int
     scoring_eligible_count: int
     missing_sqft_count: int
     raw_inserted: int
@@ -38,9 +39,7 @@ class RentCastShadowSyncResult:
 
 
 def is_scoring_eligible(record: dict[str, Any]) -> bool:
-    """Keep non-land homes eligible even when square footage is unavailable."""
-
-    return normalize_property_type(record.get("property_type")) != "Land"
+    return evaluate_listing_eligibility(record).scoring_eligible
 
 
 def _in_expected_county(raw_listing: dict[str, Any]) -> bool:
@@ -105,9 +104,9 @@ def sync_rentcast_shadow(
             unique_records[key] = normalized
 
     records = list(unique_records.values())
-    excluded_land_count = sum(
-        not is_scoring_eligible(record) for record in records
-    )
+    decisions = [evaluate_listing_eligibility(record) for record in records]
+    excluded_count = sum(not decision.scoring_eligible for decision in decisions)
+    review_count = sum(decision.status == "review" for decision in decisions)
     missing_sqft_count = sum(
         is_scoring_eligible(record) and record.get("sqft") is None
         for record in records
@@ -125,7 +124,8 @@ def sync_rentcast_shadow(
         returned_count=returned_count,
         county_count=county_count,
         unique_county_count=len(records),
-        excluded_land_count=excluded_land_count,
+        excluded_count=excluded_count,
+        review_count=review_count,
         scoring_eligible_count=counts["scoring_eligible"],
         missing_sqft_count=missing_sqft_count,
         raw_inserted=counts["raw_inserted"],
