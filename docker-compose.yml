@@ -39,5 +39,28 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  shadow-runner:
+    profiles: ["shadow"]
+    build:
+      context: .
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME:-realestate}
+      DB_USER: ${DB_USER:-realestate}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      RENTCAST_API_KEY: ${RENTCAST_API_KEY:?Set RENTCAST_API_KEY in .env}
+      SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-168}
+      SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}
+      SHADOW_INITIAL_DELAY_HOURS: ${SHADOW_INITIAL_DELAY_HOURS:-0}
+    command:
+      - sh
+      - -c
+      - python -m alembic upgrade head && python -m app.shadow.scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:

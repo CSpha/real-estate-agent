@@ -1,6 +1,6 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: August 6, 2026
+Last reviewed: August 16, 2026
 
 ## Goal
 
@@ -40,30 +40,41 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
 - A PostgreSQL-backed price-drop alert outbox with atomic worker claims, retries, and visible permanent failures
 - A RentCast active-sale-listing adapter with bounded pagination, normalized
   fields, secret-header authentication, and a read-only coverage audit
-- A Wayne County RentCast shadow sync with persistent alert isolation, raw land
-  retention, explicit land exclusion from the scoring population, and neutral
-  handling for unavailable square footage
+- A Wayne County RentCast shadow sync with persistent alert isolation, explicit
+  single-family/condo/townhouse automation rules, review-only manufactured and
+  multifamily records, land exclusion, and neutral handling for unavailable
+  square footage
 - A streaming, revision-safe Redfin county-market importer that supplies real
   Wayne County price, sales, inventory, listing, and market-velocity history
+- A 24-month Wayne County Auditor ArcGIS comparable-sales importer with
+  conservative sale-validity proxying, parcel-bundle suppression, and explicit
+  provisional-source labeling
+- An all-listing CSV review, batch Deal Score v2 valuation backfill, auditable
+  shadow-run history, promotion-readiness checks, and a weekly Docker shadow
+  scheduler that has no Slack configuration
 
-The primary pipeline still loads sample data from `data/sample_listings.csv`.
-RentCast coverage has been reviewed and the adapter can now run in shadow mode;
-promotion to alert-eligible recurring ingestion remains intentionally disabled.
+The primary production-style alert pipeline still loads sample data from
+`data/sample_listings.csv`. The dedicated shadow pipeline now runs real Wayne
+County inputs and Deal Score v2 review without evaluating searches or queueing
+alerts. Promotion to alert-eligible ingestion remains intentionally disabled.
 
 ## Near-term priorities
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Observe repeated RentCast shadow syncs against the real Redfin county context,
-   validate listing changes and scoring, then define an explicit promotion gate
-   before replacing the sample-only path.
+1. Accumulate three successful shadow run dates over at least 14 days and review
+   the readiness report. The gate is implemented; elapsed observations are now
+   the blocker.
 2. Add a documented migration path for existing prototype databases so they can be reconciled with the Alembic baseline.
-3. Finish wiring the pipeline so county-market data and potential-deal alert queueing run consistently in the same flow.
+3. Replace the ArcGIS arm's-length proxy with the auditor's machine-readable
+   valid-sales export or a licensed closed-sale feed before alert promotion.
 4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.
 5. Add geographic bounding-box criteria once provider coordinates are available.
 6. Continue improving the deal-scoring model so it combines comparable valuation, local market context, price-change history, and confidence more transparently.
-7. Add an operational scheduler and long-running worker process for sync and alert processing.
-8. Add structured logging, pipeline-run history, authentication, monitoring, and backup automation.
+7. Add a separately deployed long-running alert worker only after promotion;
+   the alert-isolated weekly shadow scheduler is implemented.
+8. Add structured logging, authentication, monitoring, and backup automation;
+   shadow pipeline-run history is implemented.
 9. Extend `/health` to report sync freshness and backlog health, not just database connectivity.
 
 ## Design principles
@@ -276,10 +287,13 @@ next_cursor(response)
 
 ### Work
 
-- Containerize the API and background worker.
+- Containerize the API and background worker. The API and alert-isolated shadow
+  runner are implemented; the production alert worker remains separate.
 - Add a scheduler for incremental provider synchronization and alert processing.
+  Weekly shadow synchronization is implemented; alert processing is not enabled.
 - Use structured logging with run IDs, provider IDs, and event IDs.
-- Add pipeline-run tables and operational metrics.
+- Add pipeline-run tables and operational metrics. Shadow run history and the
+  promotion-readiness calculation are implemented.
 - Change `/health` to report database connectivity and last successful sync freshness.
 - Add readiness and liveness endpoints if deployed behind an orchestrator.
 - Add authentication and authorization before publicly exposing searches, listings, or alerts.
@@ -325,9 +339,18 @@ selection tiers, and comparable valuation with confidence scoring are
 implemented. Immutable valuation persistence, the comparable-discount
 component, listing-opportunity component, days-on-market component, and
 market-momentum component, liquidity-and-inventory component, data-confidence
-component, and immutable 100-point aggregation are also implemented. Backfill,
-output review, and activation remain planned. Deal Score v2 must not replace
-the current score until those rollout steps are complete.
+component, and immutable 100-point aggregation are also implemented. The Wayne
+County shadow backfill and all-listing output review are implemented; alert
+activation remains gated. Deal Score v2 must not replace the current score
+until repeated-run review and transaction-validity confirmation are complete.
+
+The August 16 shadow review found that manufactured homes created the dominant
+county-median false-positive pattern: 9 of the original top 15 results were
+outside the automated property-type policy. After applying the policy, 79 of
+105 listings were comparable-ready and 78 received a supported valuation from
+the provisional auditor feed. All 79 have a partial review score with 70%
+component coverage; these normalized available-evidence scores are useful for
+review but are not final Deal Score v2 totals.
 
 ### Proposed Deal Score v2
 

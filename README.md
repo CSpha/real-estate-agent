@@ -102,16 +102,56 @@ python -m app.providers.sync_rentcast_shadow
 ```
 
 The shadow sync reads all active listings for Wooster, Orrville, and Rittman,
-keeps only Wayne County records, and is idempotent. It retains land records in
-the raw and current tables for auditability but marks them
-`scoring_eligible = false`. Missing square footage is left as unavailable
-rather than zero; those homes remain scoring-eligible for components that do
-not need price per square foot.
+keeps only Wayne County records, and is idempotent. Automated scoring is limited
+to active single-family homes, condos, and townhouses with the required identity
+and price fields. Manufactured and multifamily listings remain visible but need
+type-specific review; land is excluded. Missing square footage is left as
+unavailable rather than zero, so an otherwise eligible home can retain county
+context while remaining unavailable for comparable valuation.
 
 Shadow listings have `alert_eligible = false` in both current and historical
 records. They can be snapshotted and scored, but neither price-drop nor
 potential-deal alert queries can select them. The command also deliberately
 skips saved-search evaluation and alert queueing.
+
+Import the most recent 24 months of property-level Wayne County sales and run
+the all-listing review:
+
+```powershell
+python -m app.ingest.load_wayne_county_comparable_sales --months 24
+python -m app.transforms.backfill_comparable_valuations
+python -m app.reports.shadow_scoring_review
+```
+
+The importer reads the Wayne County Auditor's public ArcGIS `Recent Sales`
+layer, maps Ohio residential class codes, and retains sale amount, date,
+address, ZIP, living area, acreage, and year built. The automated layer omits
+the auditor site's `Valid` sale flag, so `arms_length` is explicitly a
+conservative proxy based on residential class, living area, price, appraised
+value, and bundled-parcel suppression. Keep these valuations in shadow review
+until a machine-readable valid-sales export or licensed closed-sale feed can
+confirm transactions.
+
+The review writes `data/shadow_scoring_review.csv` (ignored by Git) with every
+listing's market context, comparable result, review score, property type, price,
+square footage, days on market, missing fields, and policy decision.
+
+Run the dedicated pipeline once, or start its weekly Docker scheduler:
+
+```powershell
+python -m app.shadow.run_pipeline
+docker compose --profile shadow up -d shadow-runner
+python -m app.shadow.readiness
+```
+
+The shadow runner has no Slack webhook in its container environment and imports
+no alert module. It refreshes Redfin context, RentCast listings, auditor sales,
+valuations, the review report, and `shadow_pipeline_runs`. Promotion remains
+blocked until three successful run dates span at least 14 days, no shadow
+listing has become alert-eligible, and at least 70% of comparable-ready homes
+have supported valuations. The default cadence is seven days and can be changed
+with `SHADOW_INTERVAL_HOURS`. Set `SHADOW_INITIAL_DELAY_HOURS` when recreating a
+runner immediately after a manual run to avoid consuming another provider call.
 
 Load real monthly Wayne County market context from Redfin, then refresh the
 county-level market scores:
@@ -238,6 +278,6 @@ aggregate `unavailable`.
 The opportunity component is also `unavailable` when no valid price history
 exists. Each score component has its own input fingerprint, so unchanged
 evidence is reused while backfilled or changed history produces a new auditable
-component. The Deal Score v2 calculation and persistence model is complete but
-is not yet used by the pipeline or alert logic; backfill and activation review
-remain separate steps.
+component. The Deal Score v2 calculation and persistence model is used by the
+dedicated shadow pipeline and review report. It is still isolated from
+saved-search and alert logic; promotion remains a separate, gated decision.
