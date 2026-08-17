@@ -6,7 +6,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 from sqlalchemy import Engine, text
@@ -94,7 +94,9 @@ CURRENT_UPSERT_SQL = text(
         days_on_market,
         first_seen_date,
         last_seen_date,
-        price_per_sqft
+        price_per_sqft,
+        alert_eligible,
+        scoring_eligible
     )
     VALUES (
         :source,
@@ -113,7 +115,9 @@ CURRENT_UPSERT_SQL = text(
         :days_on_market,
         :first_seen_date,
         :last_seen_date,
-        :price_per_sqft
+        :price_per_sqft,
+        :alert_eligible,
+        :scoring_eligible
     )
     ON CONFLICT (source, source_listing_id)
     DO UPDATE SET
@@ -138,6 +142,8 @@ CURRENT_UPSERT_SQL = text(
             EXCLUDED.last_seen_date
         ),
         price_per_sqft = EXCLUDED.price_per_sqft,
+        alert_eligible = EXCLUDED.alert_eligible,
+        scoring_eligible = EXCLUDED.scoring_eligible,
         updated_at = CURRENT_TIMESTAMP
     WHERE ROW(
         listings_current.address,
@@ -154,7 +160,9 @@ CURRENT_UPSERT_SQL = text(
         listings_current.days_on_market,
         listings_current.first_seen_date,
         listings_current.last_seen_date,
-        listings_current.price_per_sqft
+        listings_current.price_per_sqft,
+        listings_current.alert_eligible,
+        listings_current.scoring_eligible
     ) IS DISTINCT FROM ROW(
         EXCLUDED.address,
         EXCLUDED.city,
@@ -170,7 +178,9 @@ CURRENT_UPSERT_SQL = text(
         EXCLUDED.days_on_market,
         LEAST(listings_current.first_seen_date, EXCLUDED.first_seen_date),
         GREATEST(listings_current.last_seen_date, EXCLUDED.last_seen_date),
-        EXCLUDED.price_per_sqft
+        EXCLUDED.price_per_sqft,
+        EXCLUDED.alert_eligible,
+        EXCLUDED.scoring_eligible
     )
     """
 )
@@ -194,7 +204,9 @@ SQLITE_CURRENT_UPSERT_SQL = text(
         days_on_market,
         first_seen_date,
         last_seen_date,
-        price_per_sqft
+        price_per_sqft,
+        alert_eligible,
+        scoring_eligible
     )
     VALUES (
         :source,
@@ -213,7 +225,9 @@ SQLITE_CURRENT_UPSERT_SQL = text(
         :days_on_market,
         :first_seen_date,
         :last_seen_date,
-        :price_per_sqft
+        :price_per_sqft,
+        :alert_eligible,
+        :scoring_eligible
     )
     ON CONFLICT (source, source_listing_id)
     DO UPDATE SET
@@ -232,6 +246,8 @@ SQLITE_CURRENT_UPSERT_SQL = text(
         first_seen_date = EXCLUDED.first_seen_date,
         last_seen_date = EXCLUDED.last_seen_date,
         price_per_sqft = EXCLUDED.price_per_sqft,
+        alert_eligible = EXCLUDED.alert_eligible,
+        scoring_eligible = EXCLUDED.scoring_eligible,
         updated_at = CURRENT_TIMESTAMP
     """
 )
@@ -253,7 +269,9 @@ EXISTING_CURRENT_SELECT_SQL = text(
         days_on_market,
         first_seen_date,
         last_seen_date,
-        price_per_sqft
+        price_per_sqft,
+        alert_eligible,
+        scoring_eligible
     FROM listings_current
     WHERE source = :source
       AND source_listing_id = :source_listing_id
@@ -276,6 +294,8 @@ TRACKED_CURRENT_FIELDS = (
     "first_seen_date",
     "last_seen_date",
     "price_per_sqft",
+    "alert_eligible",
+    "scoring_eligible",
 )
 
 
@@ -330,12 +350,25 @@ def ingest_records(
     records: list[dict[str, Any]],
     *,
     engine: Engine | None = None,
+    alert_eligible: bool = True,
+    scoring_eligibility: Callable[[dict[str, Any]], bool] | None = None,
 ) -> dict[str, int]:
     if not records:
-        return {"received": 0, "raw_inserted": 0, "current_changed": 0}
+        return {
+            "received": 0,
+            "raw_inserted": 0,
+            "scoring_eligible": 0,
+            "scoring_excluded": 0,
+            "current_changed": 0,
+        }
 
     raw_records = [_prepare_raw_record(record) for record in records]
     normalized_records = [normalize_listing(record) for record in records]
+    for record in normalized_records:
+        record["alert_eligible"] = alert_eligible
+        record["scoring_eligible"] = (
+            scoring_eligibility(record) if scoring_eligibility else True
+        )
     engine = engine or get_engine()
     with engine.begin() as conn:
         if engine.dialect.name == "sqlite":
@@ -360,12 +393,19 @@ def ingest_records(
     counts = {
         "received": len(records),
         "raw_inserted": max(raw_result.rowcount, 0),
+        "scoring_eligible": sum(
+            record["scoring_eligible"] for record in normalized_records
+        ),
+        "scoring_excluded": sum(
+            not record["scoring_eligible"] for record in normalized_records
+        ),
         "current_changed": current_changed,
     }
     print(
         "Listing load complete: "
         f"{counts['received']} received, "
         f"{counts['raw_inserted']} new raw payload(s), "
+        f"{counts['scoring_excluded']} excluded from scoring, "
         f"{counts['current_changed']} current listing(s) inserted or changed."
     )
     return counts

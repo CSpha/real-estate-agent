@@ -65,15 +65,6 @@ Start Postgres:
 docker compose up -d
 ```
 
-Run schema files as needed:
-
-```powershell
-python -m app.utils.run_sql sql/001_create_listings_current.sql
-python -m app.utils.run_sql sql/002_create_listing_history.sql
-python -m app.utils.run_sql sql/003_create_alerts_sent.sql
-python -m app.utils.run_sql sql/011_create_investment_analyses.sql
-```
-
 Apply the authoritative Alembic schema, including comparable valuations:
 
 ```powershell
@@ -103,12 +94,24 @@ The default audit makes three requests for Wooster, Orrville, and Rittman. It
 prints only aggregate coverage and field-completeness information; it neither
 prints addresses or agent contacts nor stores listing records.
 
-After reviewing coverage, intentionally ingest one page of active listings:
+After reviewing coverage, run the Wayne County shadow sync:
 
 ```powershell
-python -m app.providers.sync --provider rentcast `
-  --city Wooster --state OH --page-size 100
+python -m alembic upgrade head
+python -m app.providers.sync_rentcast_shadow
 ```
+
+The shadow sync reads all active listings for Wooster, Orrville, and Rittman,
+keeps only Wayne County records, and is idempotent. It retains land records in
+the raw and current tables for auditability but marks them
+`scoring_eligible = false`. Missing square footage is left as unavailable
+rather than zero; those homes remain scoring-eligible for components that do
+not need price per square foot.
+
+Shadow listings have `alert_eligible = false` in both current and historical
+records. They can be snapshotted and scored, but neither price-drop nor
+potential-deal alert queries can select them. The command also deliberately
+skips saved-search evaluation and alert queueing.
 
 RentCast is a commercial aggregation API, not a direct MLS feed. Confirm its
 current usage and retention terms before production use. Its public API terms

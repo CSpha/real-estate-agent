@@ -153,6 +153,7 @@ def run_scoring(limit: int = Query(100, ge=1, le=1000)):
                 days_on_market,
                 sqft,
                 price_per_sqft,
+                scoring_eligible,
                 snapshot_timestamp,
                 ROW_NUMBER() OVER (
                     PARTITION BY source, source_listing_id
@@ -172,6 +173,7 @@ def run_scoring(limit: int = Query(100, ge=1, le=1000)):
                 days_on_market,
                 sqft,
                 price_per_sqft,
+                scoring_eligible,
                 snapshot_timestamp AS current_snapshot
             FROM ranked_history
             WHERE rn = 1
@@ -226,6 +228,7 @@ def run_scoring(limit: int = Query(100, ge=1, le=1000)):
         JOIN previous p
             ON l.source = p.source
            AND l.source_listing_id = p.source_listing_id
+        WHERE l.scoring_eligible
         ORDER BY market_score DESC, price_change_pct ASC
         LIMIT :limit
         """

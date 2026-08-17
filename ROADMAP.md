@@ -40,18 +40,20 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
 - A PostgreSQL-backed price-drop alert outbox with atomic worker claims, retries, and visible permanent failures
 - A RentCast active-sale-listing adapter with bounded pagination, normalized
   fields, secret-header authentication, and a read-only coverage audit
+- A Wayne County RentCast shadow sync with persistent alert isolation, raw land
+  retention, explicit land exclusion from the scoring population, and neutral
+  handling for unavailable square footage
 
 The primary pipeline still loads sample data from `data/sample_listings.csv`.
-The RentCast adapter is implemented, but live ingestion remains disabled until
-the API subscription is active, local coverage is reviewed, and usage and
-retention terms are accepted.
+RentCast coverage has been reviewed and the adapter can now run in shadow mode;
+promotion to alert-eligible recurring ingestion remains intentionally disabled.
 
 ## Near-term priorities
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Complete the RentCast coverage audit, document its data terms, and run the
-   adapter in shadow mode before replacing the sample-data-only pipeline path.
+1. Observe repeated RentCast shadow syncs, validate listing changes and scoring,
+   then define an explicit promotion gate before replacing the sample-only path.
 2. Add a documented migration path for existing prototype databases so they can be reconciled with the Alembic baseline.
 3. Finish wiring the pipeline so county-market data and potential-deal alert queueing run consistently in the same flow.
 4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.
@@ -191,10 +193,15 @@ Local validation completed:
 ### Provider decision
 
 Wayne County, Ohio is the pilot geography. A RentCast adapter and bounded,
-read-only coverage audit are implemented as the initial non-MLS route. Keep a
-direct MLS Now/Trestle feed as the preferred long-term option if a broker
-relationship becomes available. Do not scrape consumer listing sites unless
-their terms and an explicit agreement authorize it.
+read-only coverage audit are implemented as the initial non-MLS route. The
+coverage audit found 105 unique Wayne County listings across the three pilot
+cities, with 100% price, days-on-market, and history coverage. A controlled
+shadow importer now keeps RentCast listings ineligible for alerts, marks land
+ineligible for scoring, and keeps homes with unavailable square footage
+eligible for non-square-footage scoring. Keep a direct MLS Now/Trestle feed as the
+preferred long-term option if a broker relationship becomes available. Do not
+scrape consumer listing sites unless their terms and an explicit agreement
+authorize it.
 
 ### Work
 

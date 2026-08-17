@@ -110,12 +110,16 @@ def test_sample_ingestion_and_history_are_idempotent(postgres_engine):
     assert first_load == {
         "received": 3,
         "raw_inserted": 3,
+        "scoring_eligible": 3,
+        "scoring_excluded": 0,
         "current_changed": 3,
     }
     assert first_snapshot == 3
     assert second_load == {
         "received": 3,
         "raw_inserted": 0,
+        "scoring_eligible": 3,
+        "scoring_excluded": 0,
         "current_changed": 0,
     }
     assert second_snapshot == 0
@@ -549,6 +553,57 @@ def test_material_price_change_creates_one_event(postgres_engine):
     assert matching[0]["current_price"] == 70000
 
 
+def test_shadow_history_cannot_create_a_price_drop_event(postgres_engine):
+    try:
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO listing_history (
+                        source,
+                        source_listing_id,
+                        address,
+                        city,
+                        state,
+                        list_price,
+                        status,
+                        alert_eligible,
+                        snapshot_timestamp
+                    )
+                    VALUES
+                        (
+                            'rentcast', 'shadow-test', '1 Shadow St',
+                            'Wooster', 'OH', 200000, 'Active', FALSE,
+                            '2026-08-15 12:00:00+00'
+                        ),
+                        (
+                            'rentcast', 'shadow-test', '1 Shadow St',
+                            'Wooster', 'OH', 190000, 'Active', FALSE,
+                            '2026-08-16 12:00:00+00'
+                        )
+                    """
+                )
+            )
+
+        events = get_price_drop_events(postgres_engine)
+        assert not any(
+            event["source"] == "rentcast"
+            and event["source_listing_id"] == "shadow-test"
+            for event in events
+        )
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM listing_history
+                    WHERE source = 'rentcast'
+                      AND source_listing_id = 'shadow-test'
+                    """
+                )
+            )
+
+
 def test_price_drop_outbox_queues_and_delivers_once(postgres_engine):
     assert enqueue_price_drop_events(postgres_engine) == 1
     assert enqueue_price_drop_events(postgres_engine) == 0
@@ -788,6 +843,43 @@ def test_market_scoring_changes_only_when_inputs_change(postgres_engine):
 
     assert second_scored_at == first_scored_at
     assert potential_deal_count == 2
+
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE listings_current
+                SET scoring_eligible = FALSE
+                WHERE source = 'sample_feed'
+                  AND source_listing_id = '1001'
+                """
+            )
+        )
+    assert score_listings_against_market(postgres_engine) == 1
+    with postgres_engine.connect() as conn:
+        assert conn.scalar(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM listing_market_scores
+                WHERE source = 'sample_feed'
+                  AND source_listing_id = '1001'
+                """
+            )
+        ) == 0
+
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE listings_current
+                SET scoring_eligible = TRUE
+                WHERE source = 'sample_feed'
+                  AND source_listing_id = '1001'
+                """
+            )
+        )
+    assert score_listings_against_market(postgres_engine) == 1
 
 
 def test_mortgage_rate_history_is_idempotent(postgres_engine):

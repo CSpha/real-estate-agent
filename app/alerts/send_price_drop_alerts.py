@@ -18,6 +18,7 @@ def get_price_drop_events(engine: Engine | None = None):
                 state,
                 list_price,
                 status,
+                alert_eligible,
                 snapshot_timestamp,
                 ROW_NUMBER() OVER (
                     PARTITION BY source, source_listing_id
@@ -34,6 +35,7 @@ def get_price_drop_events(engine: Engine | None = None):
                 state,
                 list_price AS current_price,
                 status AS current_status,
+                alert_eligible AS current_alert_eligible,
                 snapshot_timestamp AS current_snapshot
             FROM ranked_history
             WHERE rn = 1
@@ -44,6 +46,7 @@ def get_price_drop_events(engine: Engine | None = None):
                 source_listing_id,
                 list_price AS previous_price,
                 status AS previous_status,
+                alert_eligible AS previous_alert_eligible,
                 snapshot_timestamp AS previous_snapshot
             FROM ranked_history
             WHERE rn = 2
@@ -77,6 +80,8 @@ def get_price_drop_events(engine: Engine | None = None):
            AND outbox.source_listing_id = l.source_listing_id
            AND outbox.event_timestamp = l.current_snapshot
         WHERE l.current_price < p.previous_price
+          AND l.current_alert_eligible
+          AND p.previous_alert_eligible
           AND a.id IS NULL
           AND outbox.id IS NULL
         ORDER BY price_change ASC, l.source_listing_id;

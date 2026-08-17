@@ -25,12 +25,16 @@ def get_potential_deal_events(engine: Engine | None = None):
             pd.score_reason,
             pd.scored_at AS event_timestamp
         FROM potential_deals pd
+        JOIN listings_current listing
+          ON listing.source = pd.source
+         AND listing.source_listing_id = pd.source_listing_id
         LEFT JOIN alerts_sent a
             ON a.alert_type = 'potential_deal'
            AND a.source = pd.source
            AND a.source_listing_id = pd.source_listing_id
            AND a.event_timestamp = pd.scored_at
-        WHERE a.id IS NULL
+        WHERE listing.alert_eligible
+          AND a.id IS NULL
         ORDER BY pd.market_score DESC, pd.pct_below_or_above_median ASC;
         """
     )

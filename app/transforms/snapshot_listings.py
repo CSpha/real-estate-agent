@@ -25,7 +25,9 @@ def snapshot_current_listings(engine: Engine | None = None) -> int:
             days_on_market,
             first_seen_date,
             last_seen_date,
-            price_per_sqft
+            price_per_sqft,
+            alert_eligible,
+            scoring_eligible
         )
         SELECT
             source,
@@ -44,7 +46,9 @@ def snapshot_current_listings(engine: Engine | None = None) -> int:
             days_on_market,
             first_seen_date,
             last_seen_date,
-            price_per_sqft
+            price_per_sqft,
+            alert_eligible,
+            scoring_eligible
         FROM listings_current
         WHERE NOT EXISTS (
             SELECT 1
@@ -64,7 +68,9 @@ def snapshot_current_listings(engine: Engine | None = None) -> int:
                     h.days_on_market,
                     h.first_seen_date,
                     h.last_seen_date,
-                    h.price_per_sqft
+                    h.price_per_sqft,
+                    h.alert_eligible,
+                    h.scoring_eligible
                 FROM listing_history h
                 WHERE h.source = listings_current.source
                   AND h.source_listing_id = listings_current.source_listing_id
@@ -86,7 +92,9 @@ def snapshot_current_listings(engine: Engine | None = None) -> int:
                 latest.days_on_market,
                 latest.first_seen_date,
                 latest.last_seen_date,
-                latest.price_per_sqft
+                latest.price_per_sqft,
+                latest.alert_eligible,
+                latest.scoring_eligible
             ) IS NOT DISTINCT FROM ROW(
                 listings_current.address,
                 listings_current.city,
@@ -102,7 +110,9 @@ def snapshot_current_listings(engine: Engine | None = None) -> int:
                 listings_current.days_on_market,
                 listings_current.first_seen_date,
                 listings_current.last_seen_date,
-                listings_current.price_per_sqft
+                listings_current.price_per_sqft,
+                listings_current.alert_eligible,
+                listings_current.scoring_eligible
             )
         )
         """

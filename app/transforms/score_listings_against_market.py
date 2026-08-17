@@ -67,6 +67,7 @@ SCORE_LISTINGS_SQL = text(
       ON LOWER(ccl.county_name) = LOWER(cs.county_name)
      AND UPPER(ccl.state) = UPPER(cs.state)
     WHERE lc.list_price IS NOT NULL
+      AND lc.scoring_eligible
       AND cs.median_sale_price IS NOT NULL
       AND cs.period_date = (
           SELECT MAX(recent.period_date)
@@ -125,9 +126,10 @@ DELETE_STALE_SCORES_SQL = text(
           JOIN county_sales sales
             ON LOWER(lookup.county_name) = LOWER(sales.county_name)
            AND UPPER(lookup.state) = UPPER(sales.state)
-          WHERE LOWER(listing.city) = LOWER(lookup.city)
-            AND UPPER(listing.state) = UPPER(lookup.state)
-            AND listing.list_price IS NOT NULL
+            WHERE LOWER(listing.city) = LOWER(lookup.city)
+              AND UPPER(listing.state) = UPPER(lookup.state)
+              AND listing.scoring_eligible
+              AND listing.list_price IS NOT NULL
             AND sales.median_sale_price IS NOT NULL
             AND sales.period_date = (
                 SELECT MAX(recent.period_date)
