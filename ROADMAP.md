@@ -43,6 +43,8 @@ The repository has moved beyond the original Phase 1/Phase 2 milestone notes and
 - A Wayne County RentCast shadow sync with persistent alert isolation, raw land
   retention, explicit land exclusion from the scoring population, and neutral
   handling for unavailable square footage
+- A streaming, revision-safe Redfin county-market importer that supplies real
+  Wayne County price, sales, inventory, listing, and market-velocity history
 
 The primary pipeline still loads sample data from `data/sample_listings.csv`.
 RentCast coverage has been reviewed and the adapter can now run in shadow mode;
@@ -52,8 +54,9 @@ promotion to alert-eligible recurring ingestion remains intentionally disabled.
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Observe repeated RentCast shadow syncs, validate listing changes and scoring,
-   then define an explicit promotion gate before replacing the sample-only path.
+1. Observe repeated RentCast shadow syncs against the real Redfin county context,
+   validate listing changes and scoring, then define an explicit promotion gate
+   before replacing the sample-only path.
 2. Add a documented migration path for existing prototype databases so they can be reconciled with the Alembic baseline.
 3. Finish wiring the pipeline so county-market data and potential-deal alert queueing run consistently in the same flow.
 4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.

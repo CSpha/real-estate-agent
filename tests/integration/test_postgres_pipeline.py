@@ -25,6 +25,10 @@ from app.alerts.send_price_drop_alerts import (
 )
 from app.alerts.outbox import deliver_pending_alerts
 from app.ingest.load_comparable_sales import load_comparable_sales
+from app.ingest.load_redfin_county_sales import (
+    REDFIN_SOURCE_FILE,
+    upsert_redfin_county_sales,
+)
 from app.ingest.load_sample_listings import load_sample_csv
 from app.market.macro_rate_signals import (
     load_fred_series,
@@ -794,6 +798,73 @@ def test_alert_ledger_recording_is_idempotent(postgres_engine):
             )
         )
     assert count == 1
+
+
+def test_redfin_county_sales_upsert_is_idempotent_and_revision_safe(
+    postgres_engine,
+):
+    records = [
+        {
+            "county_name": "Wayne",
+            "state": "OH",
+            "period_date": date(2025, 1, 31),
+            "median_sale_price": Decimal("240000"),
+            "homes_sold": 70,
+            "new_listings": 85,
+            "active_listings": 140,
+            "median_days_on_market": 35,
+            "source_file": REDFIN_SOURCE_FILE,
+        },
+        {
+            "county_name": "Wayne",
+            "state": "OH",
+            "period_date": date(2025, 2, 28),
+            "median_sale_price": Decimal("245000"),
+            "homes_sold": 72,
+            "new_listings": 90,
+            "active_listings": 145,
+            "median_days_on_market": 33,
+            "source_file": REDFIN_SOURCE_FILE,
+        },
+    ]
+    try:
+        assert upsert_redfin_county_sales(records, engine=postgres_engine) == 2
+        assert upsert_redfin_county_sales(records, engine=postgres_engine) == 0
+
+        revised = [dict(record) for record in records]
+        revised[1]["median_sale_price"] = Decimal("246000")
+        assert upsert_redfin_county_sales(revised, engine=postgres_engine) == 1
+
+        with postgres_engine.connect() as conn:
+            stored = conn.execute(
+                text(
+                    """
+                    SELECT median_sale_price, homes_sold, source_file
+                    FROM county_sales
+                    WHERE county_name = 'Wayne'
+                      AND state = 'OH'
+                      AND period_date = DATE '2025-02-28'
+                    """
+                )
+            ).one()
+        assert stored.median_sale_price == Decimal("246000.00")
+        assert stored.homes_sold == 72
+        assert stored.source_file == REDFIN_SOURCE_FILE
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM county_sales
+                    WHERE source_file = :source_file
+                      AND period_date IN (
+                          DATE '2025-01-31',
+                          DATE '2025-02-28'
+                      )
+                    """
+                ),
+                {"source_file": REDFIN_SOURCE_FILE},
+            )
 
 
 def test_market_scoring_changes_only_when_inputs_change(postgres_engine):

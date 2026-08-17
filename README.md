@@ -113,6 +113,26 @@ records. They can be snapshotted and scored, but neither price-drop nor
 potential-deal alert queries can select them. The command also deliberately
 skips saved-search evaluation and alert queueing.
 
+Load real monthly Wayne County market context from Redfin, then refresh the
+county-level market scores:
+
+```powershell
+python -m app.ingest.load_redfin_county_sales
+python -m app.transforms.score_listings_against_market
+```
+
+The importer streams Redfin's nationwide county CSV without saving it locally,
+validates the published columns, retains only monthly `Wayne County, OH` rows,
+and upserts revisions by county, state, and period. It maps homes sold, median
+sale price, median days on market, new listings, and active listings into
+`county_sales`. Re-running an unchanged file does not change `loaded_at`.
+
+Data is provided by Redfin, a national real estate brokerage. Redfin publishes
+the source through its [Data Center download hub](https://www.redfin.com/news/data-center/downloads/)
+and documents metric definitions in its [methodology](https://www.redfin.com/news/data-center/methodology/).
+The importer does not evaluate saved searches, queue alerts, or send Slack
+messages.
+
 RentCast is a commercial aggregation API, not a direct MLS feed. Confirm its
 current usage and retention terms before production use. Its public API terms
 currently permit internal research, analytics, derivative work, and storage in
