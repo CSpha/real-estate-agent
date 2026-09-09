@@ -53,6 +53,8 @@ services:
       SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-168}
       SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}
       SHADOW_INITIAL_DELAY_HOURS: ${SHADOW_INITIAL_DELAY_HOURS:-0}
+    volumes:
+      - ./data/shadow-runner:/app/data
     command:
       - sh
       - -c

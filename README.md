@@ -163,6 +163,18 @@ have supported valuations. The default cadence is seven days and can be changed
 with `SHADOW_INTERVAL_HOURS`. Set `SHADOW_INITIAL_DELAY_HOURS` when recreating a
 runner immediately after a manual run to avoid consuming another provider call.
 
+The shadow service persists its generated CSV under
+`data/shadow-runner/shadow_scoring_review.csv` on the host. Manual review commands
+continue to write `data/shadow_scoring_review.csv`. Both locations are ignored
+by Git. View scheduler activity with
+`docker compose --profile shadow logs --tail 50 shadow-runner`, and stop it with
+`docker compose --profile shadow stop shadow-runner`.
+
+The scheduler waits 168 hours after each successful run and retries failures
+after 6 hours by default. Its initial delay applies on every process restart;
+it is not a fixed wall-clock appointment. Docker Desktop and the host must stay
+running for scheduled work to execute.
+
 Load real monthly Wayne County market context from Redfin, then refresh the
 county-level market scores:
 

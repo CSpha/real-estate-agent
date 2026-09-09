@@ -62,9 +62,9 @@ alerts. Promotion to alert-eligible ingestion remains intentionally disabled.
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Schedule continued shadow observations after the reviewed first run. The UTC
-   boundary is fixed; 73 homes now have complete scores from stored evidence.
-   RentCast is configured and 98 Wayne County listings are loaded.
+1. Monitor the enabled weekly shadow runner and accumulate the required
+   observations. All 21 flags have an evidence review; 73 homes have complete
+   scores, and all listings remain in shadow mode.
 2. Retain the original database, fresh cutover backup, and legacy archive for
    rollback. The prototype migration path and development cutover are validated.
 3. Replace the ArcGIS arm's-length proxy with the auditor's machine-readable
@@ -644,9 +644,25 @@ September 8 calculations and original shadow-run record remain unchanged.
 The CSV was regenerated; no provider requests or alerts occurred. No additional
 successful observation date was recorded by this backfill.
 
-1. Review the 21 manual-review flags in the regenerated CSV and start the weekly
-   shadow scheduler with an initial delay after the already completed live run.
-   The unsupported home needs additional comparable evidence, not an invented score.
+All 21 flags were reviewed against stored valuation evidence on September 9 UTC:
+3 large estimated discounts, 16 low-confidence valuations, 1 missing living-area
+record, and 1 home without suitable comparables. Each has an evidence request and
+a retain-in-shadow disposition in ignored `data/flagged_listing_review_20260909.csv`,
+with a companion Markdown summary. The three discount flags rely on 4–5 included
+sales each; their matching omits year built, beds, and baths. This review did not
+independently verify condition, price terms, or transaction validity and did not
+change alert or scoring eligibility.
+
+The Docker shadow runner is active with a 168-hour interval, a 168-hour initial
+delay, and the existing 6-hour failure retry. Its first attempt is due around
+September 16 at 01:42 UTC / September 15 at 9:42 p.m. Eastern, provided the host
+and Docker remain running. Process restarts reapply the initial delay. Startup,
+database selection, absence of Slack configuration, and readiness were verified.
+Generated reports persist at `data/shadow-runner/shadow_scoring_review.csv`.
+Readiness still has one successful observation date.
+
+1. Monitor the weekly runner and review new reports. Obtain the requested evidence
+   for flagged listings before promotion; no flag was cleared by this data review.
 2. Investigate the 12 skipped auditor rows during the next authorized refresh.
    Their failed raw records/reasons were not persisted by the existing importer,
    so the stored database cannot explain them without another source request.
