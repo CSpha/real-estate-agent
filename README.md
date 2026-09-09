@@ -28,6 +28,12 @@ DB_PASSWORD=changeme
 The app also accepts the Docker-style names `POSTGRES_HOST`, `POSTGRES_PORT`,
 `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
 
+`DB_*` takes precedence when both conventions are set. `DATABASE_URL` overrides
+the central Python engine's connection URL. Docker Compose accepts either
+variable convention for database credentials, database name, and published port;
+containers connect to the internal `postgres:5432` address. Compose does not
+derive its service configuration from `DATABASE_URL`.
+
 For Slack alerts, add:
 
 ```env
@@ -70,6 +76,10 @@ Apply the authoritative Alembic schema, including comparable valuations:
 ```powershell
 python -m alembic upgrade head
 ```
+
+For an existing prototype database without `alembic_version`, follow the
+[legacy migration rehearsal](migrations/LEGACY_MIGRATION.md) first. The initial
+migration creates tables and must not be applied over the old schema directly.
 
 ## AI deal analyst
 
@@ -153,6 +163,18 @@ have supported valuations. The default cadence is seven days and can be changed
 with `SHADOW_INTERVAL_HOURS`. Set `SHADOW_INITIAL_DELAY_HOURS` when recreating a
 runner immediately after a manual run to avoid consuming another provider call.
 
+The shadow service persists its generated CSV under
+`data/shadow-runner/shadow_scoring_review.csv` on the host. Manual review commands
+continue to write `data/shadow_scoring_review.csv`. Both locations are ignored
+by Git. View scheduler activity with
+`docker compose --profile shadow logs --tail 50 shadow-runner`, and stop it with
+`docker compose --profile shadow stop shadow-runner`.
+
+The scheduler waits 168 hours after each successful run and retries failures
+after 6 hours by default. Its initial delay applies on every process restart;
+it is not a fixed wall-clock appointment. Docker Desktop and the host must stay
+running for scheduled work to execute.
+
 Load real monthly Wayne County market context from Redfin, then refresh the
 county-level market scores:
 
@@ -211,6 +233,13 @@ python -m app.api
 ```
 
 ## Comparable valuation and Deal Score v2
+
+Valuation analysis dates are UTC calendar days, including the default date for
+shadow runs and batch backfills. An explicit `--as-of-date` includes history
+strictly before midnight UTC at the start of the next day. Snapshot recency
+also uses UTC, independent of the machine or PostgreSQL session timezone.
+Backfills choose one analysis date for the whole batch. Historical snapshots
+and prior calculations remain immutable when later evidence is recalculated.
 
 Load property-level comparable sales, then persist a listing valuation:
 

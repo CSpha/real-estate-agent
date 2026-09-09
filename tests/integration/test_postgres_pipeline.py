@@ -103,6 +103,47 @@ def postgres_engine() -> Engine:
         admin_engine.dispose()
 
 
+@pytest.mark.parametrize("session_zone", ["UTC", "America/New_York", "Asia/Tokyo"])
+def test_valuation_history_uses_utc_day_boundary(postgres_engine, session_zone):
+    from app.transforms.persist_comparable_valuation import (
+        PRICE_HISTORY_SQL,
+        LISTING_DOM_SQL,
+    )
+
+    with postgres_engine.connect() as conn:
+        transaction = conn.begin()
+        try:
+            conn.execute(
+                text("SELECT set_config('TimeZone', :zone, true)"),
+                {"zone": session_zone},
+            )
+            conn.execute(
+                text("""
+                INSERT INTO listing_history
+                    (source, source_listing_id, list_price, days_on_market, snapshot_timestamp)
+                VALUES
+                    ('boundary', 'one', 100000, 10, '2026-09-08 23:59:59+00'),
+                    ('boundary', 'one', 95000, 11, '2026-09-09 01:30:00+00'),
+                    ('boundary', 'one', 90000, 12, '2026-09-10 00:00:00+00')
+            """)
+            )
+            params = {
+                "source": "boundary",
+                "source_listing_id": "one",
+                "as_of_date": date(2026, 9, 9),
+            }
+            rows = conn.execute(PRICE_HISTORY_SQL, params).mappings().all()
+            assert [r["list_price"] for r in rows] == [100000, 95000]
+            assert (
+                conn.execute(LISTING_DOM_SQL, params).mappings().one()["days_on_market"]
+                == 11
+            )
+            params["as_of_date"] = date(2026, 9, 8)
+            assert len(conn.execute(PRICE_HISTORY_SQL, params).all()) == 1
+        finally:
+            transaction.rollback()
+
+
 def test_sample_ingestion_and_history_are_idempotent(postgres_engine):
     sample_path = PROJECT_ROOT / "data" / "sample_listings.csv"
 
@@ -278,8 +319,7 @@ def test_comparable_valuation_is_explainable(postgres_engine):
         "dispersion_penalty",
     }
     assert all(
-        comparable["included_in_valuation"]
-        for comparable in result["comparables"]
+        comparable["included_in_valuation"] for comparable in result["comparables"]
     )
 
 
@@ -358,9 +398,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert first["deal_score_v2_created"] is True
         assert repeated["deal_score_v2_created"] is False
         assert repeated["deal_score_v2_id"] == first["deal_score_v2_id"]
-        assert repeated["deal_score_v2_created_at"] == first[
-            "deal_score_v2_created_at"
-        ]
+        assert repeated["deal_score_v2_created_at"] == first["deal_score_v2_created_at"]
         assert first["deal_score_v2_component"]["status"] == "available"
         assert first["deal_score_v2_component"]["points"] == Decimal("6.01")
 
@@ -383,31 +421,27 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
         assert first_components["listing_opportunity"]["component"][
             "points"
         ] == Decimal("12.34")
-        assert first_components["days_on_market"]["component"][
-            "points"
-        ] == Decimal("15.00")
-        assert first_components["market_momentum"]["component"][
-            "points"
-        ] == Decimal("12.56")
+        assert first_components["days_on_market"]["component"]["points"] == Decimal(
+            "15.00"
+        )
+        assert first_components["market_momentum"]["component"]["points"] == Decimal(
+            "12.56"
+        )
         assert first_components["liquidity_inventory"]["component"][
             "points"
         ] == Decimal("8.00")
-        assert first_components["data_confidence"]["component"][
-            "points"
-        ] == Decimal("3.91")
+        assert first_components["data_confidence"]["component"]["points"] == Decimal(
+            "3.91"
+        )
         assert first["deal_score_v2"]["status"] == "complete"
         assert first["deal_score_v2"]["total_points"] == Decimal("57.82")
         assert first["deal_score_v2"]["coverage_pct"] == Decimal("100.00")
         assert all(
-            not item["component_created"]
-            for item in repeated_components.values()
+            not item["component_created"] for item in repeated_components.values()
         )
         assert {
             key: item["component_id"] for key, item in first_components.items()
-        } == {
-            key: item["component_id"]
-            for key, item in repeated_components.items()
-        }
+        } == {key: item["component_id"] for key, item in repeated_components.items()}
 
         with postgres_engine.begin() as conn:
             conn.execute(
@@ -435,21 +469,13 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
 
         with postgres_engine.connect() as conn:
             assert (
-                conn.scalar(
-                    text("SELECT COUNT(*) FROM listing_comparable_valuations")
-                )
+                conn.scalar(text("SELECT COUNT(*) FROM listing_comparable_valuations"))
                 == 2
             )
             assert (
-                conn.scalar(
-                    text("SELECT COUNT(*) FROM deal_score_v2_components")
-                )
-                == 12
+                conn.scalar(text("SELECT COUNT(*) FROM deal_score_v2_components")) == 12
             )
-            assert (
-                conn.scalar(text("SELECT COUNT(*) FROM deal_score_v2_scores"))
-                == 2
-            )
+            assert conn.scalar(text("SELECT COUNT(*) FROM deal_score_v2_scores")) == 2
             stored = conn.execute(
                 text(
                     """
@@ -488,9 +514,7 @@ def test_comparable_valuation_persistence_is_idempotent_and_auditable(
             assert stored_score.coverage_pct == Decimal("100.00")
             assert len(stored_score.input_fingerprint) == 64
             assert set(
-                stored_score.calculation_json["inputs"][
-                    "component_fingerprints"
-                ]
+                stored_score.calculation_json["inputs"]["component_fingerprints"]
             ) == set(first_components)
     finally:
         with postgres_engine.begin() as conn:
@@ -684,9 +708,7 @@ def test_outbox_records_retryable_and_permanent_failures(postgres_engine):
                 """
             ),
             {
-                "event_timestamp": datetime(
-                    2026, 7, 19, tzinfo=timezone.utc
-                ),
+                "event_timestamp": datetime(2026, 7, 19, tzinfo=timezone.utc),
                 "payload_json": json.dumps(
                     {
                         "address": "2 Retry St",
@@ -928,16 +950,19 @@ def test_market_scoring_changes_only_when_inputs_change(postgres_engine):
         )
     assert score_listings_against_market(postgres_engine) == 1
     with postgres_engine.connect() as conn:
-        assert conn.scalar(
-            text(
-                """
+        assert (
+            conn.scalar(
+                text(
+                    """
                 SELECT COUNT(*)
                 FROM listing_market_scores
                 WHERE source = 'sample_feed'
                   AND source_listing_id = '1001'
                 """
+                )
             )
-        ) == 0
+            == 0
+        )
 
     with postgres_engine.begin() as conn:
         conn.execute(
@@ -1019,8 +1044,7 @@ def test_mortgage_rate_outlooks_are_versioned_and_idempotent(postgres_engine):
     assert len(rows) == 2
     assert all(row.model_version == "pmms_momentum_v1" for row in rows)
     assert all(
-        Decimal(row.input_snapshot["current_rate"]) == Decimal("6.58")
-        for row in rows
+        Decimal(row.input_snapshot["current_rate"]) == Decimal("6.58") for row in rows
     )
     assert all(row.drivers for row in rows)
 
@@ -1072,9 +1096,9 @@ def test_multi_signal_outlook_uses_macro_and_fed_inputs(postgres_engine):
 
     cpi_lines = ["observation_date,CPIAUCSL"]
     for month_offset in range(16):
-        observation_date = (
-            latest.date() - relativedelta(months=month_offset)
-        ).replace(day=1)
+        observation_date = (latest.date() - relativedelta(months=month_offset)).replace(
+            day=1
+        )
         value = Decimal("325") - Decimal(month_offset) / 2
         cpi_lines.append(f"{observation_date.isoformat()},{value}")
     load_fred_series("CPIAUCSL", "\n".join(cpi_lines), postgres_engine)
@@ -1145,16 +1169,14 @@ def test_mortgage_rate_backtest_uses_chronological_holdout(postgres_engine):
         for day_offset in range(1096):
             observation_date = latest - timedelta(days=day_offset)
             cycle = Decimal((day_offset % 120) - 60) / 1000
-            lines.append(
-                f"{observation_date.date().isoformat()},{base + cycle}"
-            )
+            lines.append(f"{observation_date.date().isoformat()},{base + cycle}")
         load_fred_series(series_id, "\n".join(lines), postgres_engine)
 
     cpi_lines = ["observation_date,CPIAUCSL"]
     for month_offset in range(48):
-        observation_date = (
-            latest.date() - relativedelta(months=month_offset)
-        ).replace(day=1)
+        observation_date = (latest.date() - relativedelta(months=month_offset)).replace(
+            day=1
+        )
         cpi_lines.append(
             f"{observation_date.isoformat()},"
             f"{Decimal('325') - Decimal(month_offset) * Decimal('0.6')}"
@@ -1208,12 +1230,10 @@ def test_mortgage_rate_backtest_uses_chronological_holdout(postgres_engine):
     assert all(result.approval_reason for result in calibrations)
 
     with postgres_engine.connect() as conn:
-        assert conn.scalar(
-            text("SELECT COUNT(*) FROM mortgage_rate_backtest_runs")
-        ) == 1
-        assert conn.scalar(
-            text("SELECT COUNT(*) FROM mortgage_rate_calibrations")
-        ) == 2
+        assert (
+            conn.scalar(text("SELECT COUNT(*) FROM mortgage_rate_backtest_runs")) == 1
+        )
+        assert conn.scalar(text("SELECT COUNT(*) FROM mortgage_rate_calibrations")) == 2
 
 
 def test_saved_search_versioning_and_evaluation_are_idempotent(postgres_engine):

@@ -2,6 +2,9 @@
 
 Alembic is the authoritative schema-management path for this project.
 
+Existing prototype databases without an Alembic revision require the
+[legacy migration rehearsal](LEGACY_MIGRATION.md) before any development cutover.
+
 Apply all migrations:
 
 ```powershell

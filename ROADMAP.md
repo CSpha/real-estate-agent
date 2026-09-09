@@ -1,6 +1,6 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: August 16, 2026
+Last reviewed: September 8, 2026
 
 ## Goal
 
@@ -62,10 +62,11 @@ alerts. Promotion to alert-eligible ingestion remains intentionally disabled.
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Accumulate three successful shadow run dates over at least 14 days and review
-   the readiness report. The gate is implemented; elapsed observations are now
-   the blocker.
-2. Add a documented migration path for existing prototype databases so they can be reconciled with the Alembic baseline.
+1. Monitor the enabled weekly shadow runner and accumulate the required
+   observations. All 21 flags have an evidence review; 73 homes have complete
+   scores, and all listings remain in shadow mode.
+2. Retain the original database, fresh cutover backup, and legacy archive for
+   rollback. The prototype migration path and development cutover are validated.
 3. Replace the ArcGIS arm's-length proxy with the auditor's machine-readable
    valid-sales export or a licensed closed-sale feed before alert promotion.
 4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.
@@ -125,23 +126,22 @@ Validation completed:
 
 - [x] PostgreSQL startup and schema initialization are documented.
 - [x] All modules use the same database settings and engine.
-- [ ] Execute sample ingestion against a fresh live PostgreSQL database.
-- [ ] Execute sample ingestion twice and confirm database-level idempotency.
+- [x] Execute sample ingestion against a fresh live PostgreSQL test database.
+- [x] Execute sample ingestion twice and confirm database-level idempotency.
 - [x] API imports and non-database endpoint tests pass.
 - [x] Tests cover ingestion, normalization, price changes, scoring stability,
       alert-ledger idempotency, and dry-run alert suppression.
 - [x] No credentials are committed.
 
-The two unchecked criteria have automated integration tests ready; they only
-require a configured PostgreSQL `_test` database.
+Both database checks passed on September 8, 2026 in an isolated PostgreSQL
+test database. The existing development database was not migrated.
 
 ## Phase 2: Build configurable saved searches — Implemented
 
 Implementation commit: `17cee39`
 
-The implementation is committed and pushed. Live database integration
-validation remains pending because PostgreSQL/Docker was not available in the
-implementation environment.
+The implementation is committed and pushed. PostgreSQL integration validation
+passed on September 8, 2026 in an isolated test database.
 
 ### Completed work
 
@@ -191,7 +191,7 @@ implementation environment.
       setting edits.
 - [x] Notification semantics and the absence of Phase 2 Slack delivery are
       documented.
-- [ ] Execute the Phase 2 integration test against a PostgreSQL `_test` database.
+- [x] Execute the Phase 2 integration test against a PostgreSQL `_test` database.
 
 Local validation completed:
 
@@ -560,24 +560,121 @@ The test suite should eventually include:
 - Slack 200, 429, temporary 5xx, and permanent 4xx tests
 - End-to-end dry-run pipeline test
 
+## Local validation: September 8, 2026
+
+- Ran `python -m pytest -m integration -q` against a newly created
+  `validation_20260908_test` database on local PostgreSQL 16: **18 passed**,
+  145 deselected, one dependency deprecation warning. This was the integration
+  suite only, not a full unit-test run.
+- The fixture applied all Alembic revisions through `0014_shadow_pipeline_runs`
+  in an isolated schema. Tests verified repeated ingestion and snapshots,
+  saved-search evaluation/versioning, comparable persistence, scoring, and
+  mocked alert delivery. No real Slack messages were sent.
+- Read-only inspection of the configured `realestate` database found eight
+  legacy public tables, no `alembic_version`, no `shadow_pipeline_runs`, and
+  three sample listings plus one fixture listing. No local shadow review CSV
+  was available. The historical August 16 figures above do not establish
+  readiness in this local database.
+- `python -m app.shadow.readiness` failed because central settings read `DB_*`,
+  while local configuration uses `POSTGRES_*`. The legacy utility accepts those
+  aliases and confirmed database state without modifying it. The README
+  currently overstates alias support across application paths.
+- No development migration, provider ingestion, or alert activation was
+  performed. Transaction-validity confirmation remains a separate promotion
+  requirement that the readiness command does not check.
+
+## Configuration and migration follow-up: September 8, 2026
+
+- Central settings now accept `POSTGRES_*` aliases with `DB_*` precedence.
+  Docker Compose accepts both conventions for credentials, database name, and
+  the host port. The original `.env` was not edited.
+- Backed up the legacy database to ignored `data/backups/legacy_20260908.dump`
+  and restored it into `legacy_rehearsal_20260908_test`.
+- Added a test-database-only reconciliation command and explicit data-copy SQL.
+  The rehearsal built Alembic head, preserved original rows in `legacy_archive`,
+  and verified all copied non-raw values. Of 123 raw records, one listing payload
+  was copied, one duplicate collapsed, and 121 records without listing IDs remain
+  archive-only. See [the migration report](migrations/LEGACY_MIGRATION.md).
+- Verified full rollback on invalid legacy data, refusal of repeat runs, and
+  refusal of development databases. Two alert-disabled pipeline runs succeeded;
+  the second produced no data changes.
+- Full suite: **166 passed**, including 18 PostgreSQL integration tests.
+  Configuration and Compose precedence checks passed; changed Python files
+  passed Ruff. No Slack messages or provider requests were made.
+- The original development database remains unchanged. The migrated review copy
+  has zero shadow observations; migration success does not establish readiness.
+
 ## Next session: start here
 
-1. If Docker/PostgreSQL is available, complete the two remaining Phase 1
-   acceptance checks:
-   - Start a fresh test database whose name ends in `_test`.
-   - Run `python -m pytest -m integration`.
-   - Run `python -m app.run_pipeline --skip-alerts` twice against the development
-     database and confirm that the second unchanged run adds no raw payloads,
-     current changes, or history snapshots.
-2. Validate Phase 2 against PostgreSQL:
-   - Apply `python -m alembic upgrade head`.
-   - Create at least two saved searches through the API.
-   - Run the pipeline twice with `--skip-alerts`.
-   - Confirm the second unchanged run records no new search evaluations.
-3. Begin Phase 3 by choosing the target geography and authorized RESO/API data
-   provider before writing provider-specific ingestion code.
-4. Do not connect saved-search match transitions to production Slack until the
-   Phase 4 outbox/retry design is implemented.
+The September 8 cutover selected `realestate_dev_20260908` in local `.env`.
+The new database is at Alembic head; all original rows are retained in its
+`legacy_archive` schema and the untouched `realestate` database. Fresh-process
+API health, listing retrieval, readiness, and price detection passed. All copied
+listings remain alert-ineligible and no alerts are queued. The fresh dump and
+checksum/count report are under ignored `data/backups/`. See the
+[completed cutover and rollback instructions](migrations/LEGACY_MIGRATION.md).
+
+The first real shadow run subsequently succeeded (run ID 1, September 8 local
+time / September 9 UTC). The three-request audit found 98 unique Wayne County
+listings. The pipeline loaded 175 months of Redfin history and 2,038 normalized
+auditor sales; 12 unparseable auditor rows were skipped. Of 98 listings, 82 are
+scoring-eligible, 74 are comparable-ready, and 73 received supported valuations
+(98.65% coverage). The review CSV is `data/shadow_scoring_review.csv`; it flags
+21 listings for high-priority manual review and reports zero stored-policy
+mismatches. The outbox remains empty and no RentCast current/history row is
+alert-eligible. No Slack messages were sent and no recurring scheduler was started.
+
+All 74 score calculations lack listing-opportunity and days-on-market evidence:
+the pipeline's local analysis date is September 8, but its new snapshots fall on
+September 9 in UTC. The `snapshot_timestamp::date <= :as_of_date` queries exclude
+that history. Consequently 73 aggregates are partial at 70% coverage and one is
+unavailable at 30%; these are not final Deal Score v2 totals.
+
+The UTC boundary fix and stored-data recalculation are now complete. Default
+analysis dates, SQL history cutoffs, and snapshot recency consistently use UTC.
+Backfills freeze one date for the batch. Regression checks cover an evening
+New York timestamp and UTC-day cutoffs in UTC, New York, and Tokyo PostgreSQL
+sessions, including exclusion of next-day evidence. **171 tests passed**.
+
+The September 9 UTC recalculation completed all 74 attempts without errors:
+73 aggregates are now complete at 100% coverage; one remains unavailable at
+60% coverage because no suitable comparable sales were found. Repeating the
+calculation reused all valuations, components, and aggregates. The prior
+September 8 calculations and original shadow-run record remain unchanged.
+The CSV was regenerated; no provider requests or alerts occurred. No additional
+successful observation date was recorded by this backfill.
+
+All 21 flags were reviewed against stored valuation evidence on September 9 UTC:
+3 large estimated discounts, 16 low-confidence valuations, 1 missing living-area
+record, and 1 home without suitable comparables. Each has an evidence request and
+a retain-in-shadow disposition in ignored `data/flagged_listing_review_20260909.csv`,
+with a companion Markdown summary. The three discount flags rely on 4–5 included
+sales each; their matching omits year built, beds, and baths. This review did not
+independently verify condition, price terms, or transaction validity and did not
+change alert or scoring eligibility.
+
+The Docker shadow runner is active with a 168-hour interval, a 168-hour initial
+delay, and the existing 6-hour failure retry. Its first attempt is due around
+September 16 at 01:42 UTC / September 15 at 9:42 p.m. Eastern, provided the host
+and Docker remain running. Process restarts reapply the initial delay. Startup,
+database selection, absence of Slack configuration, and readiness were verified.
+Generated reports persist at `data/shadow-runner/shadow_scoring_review.csv`.
+Readiness still has one successful observation date.
+
+1. Monitor the weekly runner and review new reports. Obtain the requested evidence
+   for flagged listings before promotion; no flag was cleared by this data review.
+2. Investigate the 12 skipped auditor rows during the next authorized refresh.
+   Their failed raw records/reasons were not persisted by the existing importer,
+   so the stored database cannot explain them without another source request.
+3. Once the initial shadow run is reviewed, schedule continued observations and
+   collect three successful run dates spanning at least 14 days, at least 70%
+   supported comparable coverage, and zero alert-eligible shadow listings.
+4. Confirm comparable transaction validity using an authoritative export or
+   licensed feed and investigate missing score components before promotion.
+   Passing readiness alone does not satisfy these requirements.
+5. Add sync-freshness health reporting, CI, structured logging, and tested
+   backup/restore. Finish notification hardening and test-channel validation
+   before separately approved production alert activation.
 
 ## External references
 

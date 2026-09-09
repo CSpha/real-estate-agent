@@ -147,7 +147,7 @@ PRICE_HISTORY_SQL = text(
     FROM listing_history
     WHERE source = :source
       AND source_listing_id = :source_listing_id
-      AND snapshot_timestamp::date <= :as_of_date
+      AND snapshot_timestamp < ((CAST(:as_of_date AS date) + 1)::timestamp AT TIME ZONE 'UTC')
     ORDER BY snapshot_timestamp, id
     """
 )
@@ -158,7 +158,7 @@ LISTING_DOM_SQL = text(
     FROM listing_history
     WHERE source = :source
       AND source_listing_id = :source_listing_id
-      AND snapshot_timestamp::date <= :as_of_date
+      AND snapshot_timestamp < ((CAST(:as_of_date AS date) + 1)::timestamp AT TIME ZONE 'UTC')
       AND days_on_market IS NOT NULL
     ORDER BY snapshot_timestamp DESC, id DESC
     LIMIT 1
@@ -324,9 +324,7 @@ def persist_comparable_valuation(
         engine=engine,
     )
     calculation_json = _canonical_json(valuation)
-    input_fingerprint = hashlib.sha256(
-        calculation_json.encode("utf-8")
-    ).hexdigest()
+    input_fingerprint = hashlib.sha256(calculation_json.encode("utf-8")).hexdigest()
     valuation_parameters = {
         "source": valuation["subject"]["source"],
         "source_listing_id": valuation["subject"]["source_listing_id"],
@@ -338,9 +336,7 @@ def persist_comparable_valuation(
         "selected_tier": valuation["selected_tier"],
         "available_comparable_count": valuation["available_comparable_count"],
         "included_comparable_count": valuation["included_comparable_count"],
-        "weighted_median_price_per_sqft": valuation[
-            "weighted_median_price_per_sqft"
-        ],
+        "weighted_median_price_per_sqft": valuation["weighted_median_price_per_sqft"],
         "estimated_value": valuation["estimated_value"],
         "estimated_value_low": valuation["estimated_value_low"],
         "estimated_value_high": valuation["estimated_value_high"],
@@ -359,31 +355,35 @@ def persist_comparable_valuation(
                 PRICE_HISTORY_SQL,
                 {
                     "source": valuation["subject"]["source"],
-                    "source_listing_id": valuation["subject"][
-                        "source_listing_id"
-                    ],
+                    "source_listing_id": valuation["subject"]["source_listing_id"],
                     "as_of_date": valuation["as_of_date"],
                 },
             ).mappings()
         ]
-        listing_dom = connection.execute(
-            LISTING_DOM_SQL,
-            {
-                "source": valuation["subject"]["source"],
-                "source_listing_id": valuation["subject"][
-                    "source_listing_id"
-                ],
-                "as_of_date": valuation["as_of_date"],
-            },
-        ).mappings().one_or_none()
-        county_dom = connection.execute(
-            COUNTY_DOM_SQL,
-            {
-                "city": valuation["subject"]["city"],
-                "state": valuation["subject"]["state"],
-                "as_of_date": valuation["as_of_date"],
-            },
-        ).mappings().one_or_none()
+        listing_dom = (
+            connection.execute(
+                LISTING_DOM_SQL,
+                {
+                    "source": valuation["subject"]["source"],
+                    "source_listing_id": valuation["subject"]["source_listing_id"],
+                    "as_of_date": valuation["as_of_date"],
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        county_dom = (
+            connection.execute(
+                COUNTY_DOM_SQL,
+                {
+                    "city": valuation["subject"]["city"],
+                    "state": valuation["subject"]["state"],
+                    "as_of_date": valuation["as_of_date"],
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
         county_market_history = [
             dict(row)
             for row in connection.execute(
@@ -395,22 +395,24 @@ def persist_comparable_valuation(
                 },
             ).mappings()
         ]
-        county_liquidity = connection.execute(
-            COUNTY_LIQUIDITY_SQL,
-            {
-                "city": valuation["subject"]["city"],
-                "state": valuation["subject"]["state"],
-                "as_of_date": valuation["as_of_date"],
-            },
-        ).mappings().one_or_none()
+        county_liquidity = (
+            connection.execute(
+                COUNTY_LIQUIDITY_SQL,
+                {
+                    "city": valuation["subject"]["city"],
+                    "state": valuation["subject"]["state"],
+                    "as_of_date": valuation["as_of_date"],
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
     opportunity_component = calculate_listing_opportunity_component(
         price_history,
         as_of_date=valuation["as_of_date"],
     )
     days_on_market_component = calculate_days_on_market_component(
-        subject_days_on_market=(
-            listing_dom["days_on_market"] if listing_dom else None
-        ),
+        subject_days_on_market=(listing_dom["days_on_market"] if listing_dom else None),
         listing_snapshot_timestamp=(
             listing_dom["snapshot_timestamp"] if listing_dom else None
         ),
@@ -430,12 +432,8 @@ def persist_comparable_valuation(
         active_listings=(
             county_liquidity["active_listings"] if county_liquidity else None
         ),
-        new_listings=(
-            county_liquidity["new_listings"] if county_liquidity else None
-        ),
-        county_name=(
-            county_liquidity["county_name"] if county_liquidity else None
-        ),
+        new_listings=(county_liquidity["new_listings"] if county_liquidity else None),
+        county_name=(county_liquidity["county_name"] if county_liquidity else None),
         market_period_date=(
             county_liquidity["period_date"] if county_liquidity else None
         ),
@@ -500,9 +498,7 @@ def persist_comparable_valuation(
             for item in persisted_components
         }
         score_json = _canonical_json(deal_score)
-        score_input_fingerprint = hashlib.sha256(
-            score_json.encode("utf-8")
-        ).hexdigest()
+        score_input_fingerprint = hashlib.sha256(score_json.encode("utf-8")).hexdigest()
         score_parameters = {
             "valuation_id": valuation_record["id"],
             "scoring_version": deal_score["scoring_version"],
@@ -512,9 +508,7 @@ def persist_comparable_valuation(
             "available_points": deal_score["available_points"],
             "available_max_points": deal_score["available_max_points"],
             "coverage_pct": deal_score["coverage_pct"],
-            "normalized_available_score": deal_score[
-                "normalized_available_score"
-            ],
+            "normalized_available_score": deal_score["normalized_available_score"],
             "reason": deal_score["reason"],
             "calculation_json": score_json,
         }
@@ -558,8 +552,7 @@ def persist_comparable_valuation(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Persist a comparable valuation and its available Deal Score v2 "
-            "components."
+            "Persist a comparable valuation and its available Deal Score v2 components."
         )
     )
     parser.add_argument("source", help="Listing source")

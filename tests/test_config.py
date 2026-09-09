@@ -1,6 +1,68 @@
 from sqlalchemy.engine import make_url
+import pytest
 
 from app.config import get_settings
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(monkeypatch):
+    monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
+    for name in (
+        "DATABASE_URL",
+        "DB_HOST",
+        "DB_PORT",
+        "DB_NAME",
+        "DB_USER",
+        "DB_PASSWORD",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+def test_postgres_aliases_and_db_precedence(monkeypatch):
+    aliases = {
+        "HOST": ("HOST", "alias.example", "primary.example"),
+        "PORT": ("PORT", "5434", "5435"),
+        "NAME": ("DB", "alias_db", "primary_db"),
+        "USER": ("USER", "alias_user", "primary_user"),
+        "PASSWORD": ("PASSWORD", "alias/pass:word", "primary/pass:word"),
+    }
+    for alias, value, _ in aliases.values():
+        monkeypatch.setenv(f"POSTGRES_{alias}", value)
+    settings = get_settings()
+    assert (
+        settings.db_host,
+        settings.db_port,
+        settings.db_name,
+        settings.db_user,
+        settings.db_password,
+    ) == ("alias.example", 5434, "alias_db", "alias_user", "alias/pass:word")
+    assert make_url(settings.sqlalchemy_database_url).password == "alias/pass:word"
+    for primary, (_, _, value) in aliases.items():
+        monkeypatch.setenv(f"DB_{primary}", value)
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert (
+        settings.db_host,
+        settings.db_port,
+        settings.db_name,
+        settings.db_user,
+        settings.db_password,
+    ) == ("primary.example", 5435, "primary_db", "primary_user", "primary/pass:word")
+
+
+@pytest.mark.parametrize("name", ["DB_PORT", "POSTGRES_PORT"])
+def test_invalid_port_identifies_setting(monkeypatch, name):
+    monkeypatch.setenv(name, "invalid")
+    with pytest.raises(ValueError, match=f"{name} must be an integer"):
+        get_settings()
 
 
 def test_database_url_uses_one_db_variable_convention(monkeypatch):
