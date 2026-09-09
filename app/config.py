@@ -38,15 +38,16 @@ class Settings:
         ).render_as_string(hide_password=False)
 
 
-def _get_int_env(name: str, default: int) -> int:
-    raw_value = os.getenv(name)
+def _get_int_env(name: str, default: int, fallback: str | None = None) -> int:
+    selected_name = name if name in os.environ else fallback or name
+    raw_value = os.getenv(selected_name)
     if raw_value is None:
         return default
 
     try:
         return int(raw_value)
     except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
+        raise ValueError(f"{selected_name} must be an integer") from exc
 
 
 @lru_cache(maxsize=1)
@@ -55,11 +56,11 @@ def get_settings() -> Settings:
 
     return Settings(
         database_url=os.getenv("DATABASE_URL"),
-        db_host=os.getenv("DB_HOST", "localhost"),
-        db_port=_get_int_env("DB_PORT", 5432),
-        db_name=os.getenv("DB_NAME", "realestate"),
-        db_user=os.getenv("DB_USER", "realestate"),
-        db_password=os.getenv("DB_PASSWORD"),
+        db_host=os.getenv("DB_HOST", os.getenv("POSTGRES_HOST", "localhost")),
+        db_port=_get_int_env("DB_PORT", 5432, "POSTGRES_PORT"),
+        db_name=os.getenv("DB_NAME", os.getenv("POSTGRES_DB", "realestate")),
+        db_user=os.getenv("DB_USER", os.getenv("POSTGRES_USER", "realestate")),
+        db_password=os.getenv("DB_PASSWORD", os.getenv("POSTGRES_PASSWORD")),
         slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL"),
         rentcast_api_key=os.getenv("RENTCAST_API_KEY"),
     )

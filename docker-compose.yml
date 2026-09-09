@@ -3,11 +3,11 @@ services:
     image: postgres:16
     container_name: real_estate_postgres
     environment:
-      POSTGRES_USER: ${DB_USER:-realestate}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
-      POSTGRES_DB: ${DB_NAME:-realestate}
+      POSTGRES_USER: ${DB_USER-${POSTGRES_USER:-realestate}}
+      POSTGRES_PASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
+      POSTGRES_DB: ${DB_NAME-${POSTGRES_DB:-realestate}}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_PORT-${POSTGRES_PORT:-5432}}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,9 +25,9 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_NAME: ${DB_NAME:-realestate}
-      DB_USER: ${DB_USER:-realestate}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME-${POSTGRES_DB:-realestate}}
+      DB_USER: ${DB_USER-${POSTGRES_USER:-realestate}}
+      DB_PASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
     command:
       - sh
       - -c
@@ -46,9 +46,9 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_NAME: ${DB_NAME:-realestate}
-      DB_USER: ${DB_USER:-realestate}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME-${POSTGRES_DB:-realestate}}
+      DB_USER: ${DB_USER-${POSTGRES_USER:-realestate}}
+      DB_PASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
       RENTCAST_API_KEY: ${RENTCAST_API_KEY:?Set RENTCAST_API_KEY in .env}
       SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-168}
       SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}

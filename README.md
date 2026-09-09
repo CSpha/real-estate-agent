@@ -28,6 +28,12 @@ DB_PASSWORD=changeme
 The app also accepts the Docker-style names `POSTGRES_HOST`, `POSTGRES_PORT`,
 `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`.
 
+`DB_*` takes precedence when both conventions are set. `DATABASE_URL` overrides
+the central Python engine's connection URL. Docker Compose accepts either
+variable convention for database credentials, database name, and published port;
+containers connect to the internal `postgres:5432` address. Compose does not
+derive its service configuration from `DATABASE_URL`.
+
 For Slack alerts, add:
 
 ```env
@@ -70,6 +76,10 @@ Apply the authoritative Alembic schema, including comparable valuations:
 ```powershell
 python -m alembic upgrade head
 ```
+
+For an existing prototype database without `alembic_version`, follow the
+[legacy migration rehearsal](migrations/LEGACY_MIGRATION.md) first. The initial
+migration creates tables and must not be applied over the old schema directly.
 
 ## AI deal analyst
 
