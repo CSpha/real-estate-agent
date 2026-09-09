@@ -25,3 +25,7 @@ python -m alembic revision -m "describe the change"
 
 The original numbered SQL scripts were removed because they contained
 conflicting definitions. Do not add parallel schema definitions under `sql/`.
+
+Revision `0015_ingest_errors` adds the idempotent provider-error ledger. The
+aggregate review query is in `sql/review_ingest_errors.sql`; schema ownership
+remains with Alembic.
