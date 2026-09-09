@@ -654,18 +654,28 @@ independently verify condition, price terms, or transaction validity and did not
 change alert or scoring eligibility.
 
 The Docker shadow runner is active with a 168-hour interval, a 168-hour initial
-delay, and the existing 6-hour failure retry. Its first attempt is due around
-September 16 at 01:42 UTC / September 15 at 9:42 p.m. Eastern, provided the host
-and Docker remain running. Process restarts reapply the initial delay. Startup,
+delay, and the existing 6-hour failure retry. It was rebuilt on September 9 to
+include ingest-error persistence; its first attempt is due around September 16
+at 10:43 UTC / 6:43 a.m. Eastern, provided the host and Docker remain running.
+Process restarts reapply the initial delay. Startup,
 database selection, absence of Slack configuration, and readiness were verified.
 Generated reports persist at `data/shadow-runner/shadow_scoring_review.csv`.
 Readiness still has one successful observation date.
 
 1. Monitor the weekly runner and review new reports. Obtain the requested evidence
    for flagged listings before promotion; no flag was cleared by this data review.
-2. Investigate the 12 skipped auditor rows during the next authorized refresh.
-   Their failed raw records/reasons were not persisted by the existing importer,
-   so the stored database cannot explain them without another source request.
+Revision `0015_ingest_errors` is deployed. A September 9 refresh fetched 2,849
+records, normalized 2,042, inserted 71 new raw payloads, and updated 4 current
+sales. It persisted all 12 rejected supported-class records: 11 contain ambiguous
+pipe-delimited living-area and year-built values, mostly for multiple dwellings,
+and 1 uses an abbreviated city spelling absent from the parser. These records
+remain quarantined rather than selecting an arbitrary value. The aggregate
+report exposes reason counts without raw payloads. Idempotency is covered by the
+integration suite, and the rebuilt weekly runner includes this behavior.
+
+2. Decide whether to add an explicit Fredericksburg abbreviation mapping after
+   confirming the auditor's address convention. Keep multi-value property records
+   quarantined until a deterministic parcel/dwelling rule is documented.
 3. Once the initial shadow run is reviewed, schedule continued observations and
    collect three successful run dates spanning at least 14 days, at least 70%
    supported comparable coverage, and zero alert-eligible shadow listings.

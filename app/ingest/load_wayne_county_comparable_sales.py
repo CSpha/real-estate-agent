@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
@@ -9,8 +11,9 @@ from typing import Any
 
 import requests
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import Engine
+from sqlalchemy import Engine, text
 
+from app.db import get_engine
 from app.ingest.load_comparable_sales import ingest_comparable_records
 
 
@@ -21,6 +24,7 @@ FEATURE_URL = (
 SOURCE = "wayne_county_auditor_arcgis_provisional"
 PAGE_SIZE = 1000
 REQUEST_TIMEOUT_SECONDS = (15, 60)
+NORMALIZATION_STAGE = "normalize_comparable_sale"
 OUT_FIELDS = ",".join(
     (
         "OBJECTID",
@@ -91,8 +95,94 @@ class WayneComparableImportResult:
     bundle_excluded_count: int
     raw_inserted: int
     current_changed: int
+    skipped_count: int
+    ingest_errors_inserted: int
+    skip_reason_counts: dict[str, int]
     start_date: date
     end_date: date
+
+
+INGEST_ERROR_INSERT_SQL = text(
+    """
+    INSERT INTO ingest_errors (
+        source,
+        stage,
+        source_record_id,
+        payload_hash,
+        error_code,
+        error_message,
+        raw_record_json
+    )
+    VALUES (
+        :source,
+        :stage,
+        :source_record_id,
+        :payload_hash,
+        :error_code,
+        :error_message,
+        CAST(:raw_record_json AS JSONB)
+    )
+    ON CONFLICT (source, stage, payload_hash, error_code)
+    DO NOTHING
+    """
+)
+
+
+ERROR_MESSAGES = {
+    "missing_address": "Auditor sale is missing an address.",
+    "invalid_ohio_address": "Auditor address does not match the expected Ohio format.",
+    "unknown_wayne_city": "Auditor address city is not in the Wayne County city map.",
+    "missing_parcel": "Auditor sale is missing a parcel number.",
+    "invalid_numeric": "Auditor sale contains an invalid numeric value.",
+    "invalid_sale_date": "Auditor sale contains an invalid sale date.",
+    "normalization_error": "Auditor sale could not be normalized.",
+}
+
+
+def _error_code(exc: Exception) -> str:
+    message = str(exc)
+    if "missing PPAddress" in message:
+        return "missing_address"
+    if "Could not parse Ohio address" in message:
+        return "invalid_ohio_address"
+    if "Could not identify Wayne County city" in message:
+        return "unknown_wayne_city"
+    if "missing Parcel" in message:
+        return "missing_parcel"
+    if "Invalid numeric auditor value" in message:
+        return "invalid_numeric"
+    if isinstance(exc, (TypeError, OverflowError)) or "Invalid isoformat" in message:
+        return "invalid_sale_date"
+    return "normalization_error"
+
+
+def _prepare_ingest_error(item: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    encoded = json.dumps(
+        item,
+        default=str,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    code = _error_code(exc)
+    record_id = item.get("OBJECTID") or item.get("Parcel")
+    return {
+        "source": SOURCE,
+        "stage": NORMALIZATION_STAGE,
+        "source_record_id": str(record_id) if record_id not in (None, "") else None,
+        "payload_hash": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "error_code": code,
+        "error_message": ERROR_MESSAGES[code],
+        "raw_record_json": encoded,
+    }
+
+
+def _record_ingest_errors(errors: list[dict[str, Any]], engine: Engine) -> int:
+    if not errors:
+        return 0
+    with engine.begin() as connection:
+        result = connection.execute(INGEST_ERROR_INSERT_SQL, errors)
+    return max(result.rowcount, 0)
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -112,9 +202,7 @@ def _integer(value: Any) -> int | None:
 
 def _sale_date(value: Any) -> date:
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(
-            value / 1000, tz=timezone.utc
-        ).date()
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date()
     return date.fromisoformat(str(value).strip()[:10])
 
 
@@ -274,6 +362,7 @@ def import_wayne_county_comparable_sales(
 ) -> WayneComparableImportResult:
     if months < 1 or months > 60:
         raise ValueError("months must be between 1 and 60")
+    engine = engine or get_engine()
     end_date = as_of_date or date.today()
     start_date = end_date - relativedelta(months=months)
     attributes = fetch_wayne_county_sales(
@@ -283,17 +372,28 @@ def import_wayne_county_comparable_sales(
     )
     records: list[dict[str, Any]] = []
     skipped: Counter[str] = Counter()
+    ingest_errors: list[dict[str, Any]] = []
     for item in attributes:
-        if _property_type(_integer(item.get("PPClassCode"))) is None:
+        try:
+            property_type = _property_type(_integer(item.get("PPClassCode")))
+        except (ValueError, TypeError, OverflowError, OSError) as exc:
+            error = _prepare_ingest_error(item, exc)
+            skipped[error["error_code"]] += 1
+            ingest_errors.append(error)
+            continue
+        if property_type is None:
             continue
         try:
             record = normalize_wayne_sale(item)
-        except ValueError as exc:
-            skipped[str(exc)] += 1
+        except (ValueError, TypeError, OverflowError, OSError) as exc:
+            error = _prepare_ingest_error(item, exc)
+            skipped[error["error_code"]] += 1
+            ingest_errors.append(error)
             continue
         records.append(record)
     bundle_excluded = _exclude_bundle_duplicates(records)
     counts = ingest_comparable_records(records, engine=engine)
+    errors_inserted = _record_ingest_errors(ingest_errors, engine)
     result = WayneComparableImportResult(
         fetched_count=len(attributes),
         normalized_count=len(records),
@@ -301,11 +401,17 @@ def import_wayne_county_comparable_sales(
         bundle_excluded_count=bundle_excluded,
         raw_inserted=counts["raw_inserted"],
         current_changed=counts["current_changed"],
+        skipped_count=sum(skipped.values()),
+        ingest_errors_inserted=errors_inserted,
+        skip_reason_counts=dict(sorted(skipped.items())),
         start_date=start_date,
         end_date=end_date,
     )
     if skipped:
-        print(f"Skipped {sum(skipped.values())} unparseable auditor row(s).")
+        print(
+            f"Skipped {sum(skipped.values())} unparseable auditor row(s); "
+            f"stored {errors_inserted} new error record(s)."
+        )
     return result
 
 

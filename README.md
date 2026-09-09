@@ -142,6 +142,16 @@ value, and bundled-parcel suppression. Keep these valuations in shadow review
 until a machine-readable valid-sales export or licensed closed-sale feed can
 confirm transactions.
 
+Supported-class auditor records that cannot be normalized are stored once in
+`ingest_errors`, keyed by their payload fingerprint and stable error code. The
+raw JSON remains available for internal diagnosis while routine output exposes
+only aggregate reasons. Review them with:
+
+```powershell
+python -m app.reports.ingest_errors `
+  --source wayne_county_auditor_arcgis_provisional
+```
+
 The review writes `data/shadow_scoring_review.csv` (ignored by Git) with every
 listing's market context, comparable result, review score, property type, price,
 square footage, days on market, missing fields, and policy decision.

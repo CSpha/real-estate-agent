@@ -30,6 +30,9 @@ from app.ingest.load_redfin_county_sales import (
     upsert_redfin_county_sales,
 )
 from app.ingest.load_sample_listings import load_sample_csv
+from app.ingest.load_wayne_county_comparable_sales import (
+    import_wayne_county_comparable_sales,
+)
 from app.market.macro_rate_signals import (
     load_fred_series,
     load_sme_expectations,
@@ -42,6 +45,7 @@ from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
 )
 from app.market.mortgage_rates import get_rate_trend, load_pmms_csv
+from app.reports.ingest_errors import summarize_ingest_errors
 from app.searches.models import (
     SavedSearchCreate,
     SavedSearchUpdate,
@@ -219,6 +223,92 @@ def test_comparable_sales_ingestion_is_idempotent(postgres_engine):
         assert normalized.zip == "44691"
         assert normalized.property_type == "SingleFamilyResidence"
         assert normalized.arms_length is True
+
+
+def test_wayne_import_persists_rejected_payload_once(postgres_engine):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "features": [
+                    {
+                        "attributes": {
+                            "OBJECTID": 990001,
+                            "Parcel": "67-99001.000",
+                            "PPAddress": "901 TEST ST WOOSTER OH 44691",
+                            "PPAmount": 200000,
+                            "PPSaleDate": 1784073600000,
+                            "PPAcres": 0.2,
+                            "PPLivingArea": 1400,
+                            "PPYearBuilt": 1980,
+                            "PPTotalValue": 190000,
+                            "PPClassCode": 560,
+                            "PPClassNumber": "R",
+                            "PPListed": "TEST OWNER",
+                        }
+                    },
+                    {
+                        "attributes": {
+                            "OBJECTID": 990002,
+                            "Parcel": "67-99002.000",
+                            "PPAddress": "UNPARSEABLE PRIVATE ADDRESS",
+                            "PPAmount": 210000,
+                            "PPSaleDate": 1784073600000,
+                            "PPLivingArea": 1500,
+                            "PPTotalValue": 200000,
+                            "PPClassCode": 511,
+                            "PPClassNumber": "R",
+                        }
+                    },
+                ]
+            }
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    first = import_wayne_county_comparable_sales(
+        as_of_date=date(2026, 7, 27),
+        engine=postgres_engine,
+        session=Session(),
+    )
+    repeated = import_wayne_county_comparable_sales(
+        as_of_date=date(2026, 7, 27),
+        engine=postgres_engine,
+        session=Session(),
+    )
+
+    assert first.skipped_count == 1
+    assert first.ingest_errors_inserted == 1
+    assert first.skip_reason_counts == {"invalid_ohio_address": 1}
+    assert repeated.skipped_count == 1
+    assert repeated.ingest_errors_inserted == 0
+    with postgres_engine.connect() as conn:
+        error = (
+            conn.execute(
+                text(
+                    """
+                SELECT source_record_id, error_code, error_message, raw_record_json
+                FROM ingest_errors
+                WHERE source_record_id = '990002'
+                """
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert error["error_code"] == "invalid_ohio_address"
+    assert "UNPARSEABLE PRIVATE ADDRESS" not in error["error_message"]
+    assert error["raw_record_json"]["PPAddress"] == "UNPARSEABLE PRIVATE ADDRESS"
+    summary = summarize_ingest_errors(engine=postgres_engine)
+    assert len(summary) == 1
+    assert summary[0]["source"] == "wayne_county_auditor_arcgis_provisional"
+    assert summary[0]["stage"] == "normalize_comparable_sale"
+    assert summary[0]["error_code"] == "invalid_ohio_address"
+    assert summary[0]["record_count"] == 1
+    assert summary[0]["first_detected_at"] == summary[0]["last_detected_at"]
 
 
 def test_comparable_selection_is_deterministic_and_exposes_fallback(
