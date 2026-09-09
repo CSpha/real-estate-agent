@@ -9,6 +9,7 @@ from typing import Any, Callable
 from sqlalchemy import Engine, text
 
 from app.db import get_engine
+from app.market.analysis_dates import analysis_today
 from app.transforms.persist_comparable_valuation import (
     persist_comparable_valuation,
 )
@@ -37,6 +38,7 @@ def backfill_comparable_valuations(
     """Value each comparable-ready shadow listing; never queues alerts."""
 
     engine = engine or get_engine()
+    as_of_date = as_of_date or analysis_today()
     with engine.connect() as connection:
         listings = [
             dict(row)

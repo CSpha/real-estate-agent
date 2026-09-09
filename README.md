@@ -222,6 +222,13 @@ python -m app.api
 
 ## Comparable valuation and Deal Score v2
 
+Valuation analysis dates are UTC calendar days, including the default date for
+shadow runs and batch backfills. An explicit `--as-of-date` includes history
+strictly before midnight UTC at the start of the next day. Snapshot recency
+also uses UTC, independent of the machine or PostgreSQL session timezone.
+Backfills choose one analysis date for the whole batch. Historical snapshots
+and prior calculations remain immutable when later evidence is recalculated.
+
 Load property-level comparable sales, then persist a listing valuation:
 
 ```powershell

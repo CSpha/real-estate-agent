@@ -11,6 +11,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import Connection, Engine, text
 
 from app.db import get_engine
+from app.market.analysis_dates import analysis_today
 
 
 SELECTION_VERSION = "comparable-selection-v2"
@@ -184,11 +185,7 @@ def _percent_difference(
     comparable_value: Decimal | None,
     subject_value: Decimal | None,
 ) -> Decimal | None:
-    if (
-        comparable_value is None
-        or subject_value is None
-        or subject_value == 0
-    ):
+    if comparable_value is None or subject_value is None or subject_value == 0:
         return None
     return abs(comparable_value - subject_value) / subject_value
 
@@ -274,16 +271,20 @@ def select_comparables(
     if max_comps < min_comps:
         raise ValueError("max_comps must be greater than or equal to min_comps")
 
-    as_of_date = as_of_date or date.today()
+    as_of_date = as_of_date or analysis_today()
     engine = engine or get_engine()
     with engine.connect() as connection:
-        subject_row = connection.execute(
-            SUBJECT_SQL,
-            {
-                "source": source,
-                "source_listing_id": source_listing_id,
-            },
-        ).mappings().one_or_none()
+        subject_row = (
+            connection.execute(
+                SUBJECT_SQL,
+                {
+                    "source": source,
+                    "source_listing_id": source_listing_id,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
         if subject_row is None:
             raise ValueError(
                 f"Listing not found: source={source!r}, "

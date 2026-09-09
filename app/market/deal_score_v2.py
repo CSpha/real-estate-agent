@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from app.market.analysis_dates import utc_date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -111,16 +112,12 @@ def calculate_comparable_discount_component(
         qualifying_discount = max(Decimal("0"), discount_pct)
         points = min(
             COMPARABLE_DISCOUNT_MAX_POINTS,
-            qualifying_discount
-            / FULL_CREDIT_DISCOUNT
-            * COMPARABLE_DISCOUNT_MAX_POINTS,
+            qualifying_discount / FULL_CREDIT_DISCOUNT * COMPARABLE_DISCOUNT_MAX_POINTS,
         ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
         if discount_pct <= 0:
             reason = "Listing is at or above the supported comparable value."
         elif points == COMPARABLE_DISCOUNT_MAX_POINTS:
-            reason = (
-                "Listing is at least 30% below the supported comparable value."
-            )
+            reason = "Listing is at least 30% below the supported comparable value."
         else:
             reason = (
                 f"Listing is {discount_pct * 100:.2f}% below the supported "
@@ -158,11 +155,7 @@ def _price_observations(
         key=lambda item: (item["snapshot_timestamp"], item.get("id", 0)),
     ):
         snapshot_timestamp = row["snapshot_timestamp"]
-        snapshot_date = (
-            snapshot_timestamp.date()
-            if isinstance(snapshot_timestamp, datetime)
-            else snapshot_timestamp
-        )
+        snapshot_date = utc_date(snapshot_timestamp)
         if snapshot_date > as_of_date:
             continue
         price = _decimal(row.get("list_price"))
@@ -237,10 +230,7 @@ def calculate_listing_opportunity_component(
     recency_points = Decimal("0.00")
     if reductions:
         latest_reduction_at = reductions[-1]["effective_at"]
-        if isinstance(latest_reduction_at, datetime):
-            latest_reduction_date = latest_reduction_at.date()
-        else:
-            latest_reduction_date = latest_reduction_at
+        latest_reduction_date = utc_date(latest_reduction_at)
         days_since_latest_reduction = (as_of_date - latest_reduction_date).days
         if days_since_latest_reduction <= 30:
             recency_points = RECENT_REDUCTION_MAX_POINTS
@@ -302,7 +292,7 @@ def calculate_days_on_market_component(
     subject_days = _decimal(subject_days_on_market)
     county_median = _decimal(county_median_days_on_market)
     listing_evidence_age = (
-        (as_of_date - listing_snapshot_timestamp.date()).days
+        (as_of_date - utc_date(listing_snapshot_timestamp)).days
         if listing_snapshot_timestamp is not None
         else None
     )
@@ -360,10 +350,7 @@ def calculate_days_on_market_component(
         Decimal("0"),
         days_on_market_ratio - DAYS_ON_MARKET_ZERO_POINT_RATIO,
     )
-    scoring_range = (
-        DAYS_ON_MARKET_FULL_CREDIT_RATIO
-        - DAYS_ON_MARKET_ZERO_POINT_RATIO
-    )
+    scoring_range = DAYS_ON_MARKET_FULL_CREDIT_RATIO - DAYS_ON_MARKET_ZERO_POINT_RATIO
     points = min(
         DAYS_ON_MARKET_MAX_POINTS,
         qualifying_ratio / scoring_range * DAYS_ON_MARKET_MAX_POINTS,
@@ -371,9 +358,7 @@ def calculate_days_on_market_component(
     inputs["days_on_market_ratio"] = days_on_market_ratio
 
     if points == 0:
-        reason = (
-            "Listing days on market are no more than 75% of the county median."
-        )
+        reason = "Listing days on market are no more than 75% of the county median."
     elif points == DAYS_ON_MARKET_MAX_POINTS:
         reason = (
             "Listing days on market are at least twice the county median, "
@@ -582,12 +567,8 @@ def calculate_liquidity_inventory_component(
         "thresholds": {
             "full_credit_inventory_months": FULL_CREDIT_INVENTORY_MONTHS,
             "zero_credit_inventory_months": ZERO_CREDIT_INVENTORY_MONTHS,
-            "zero_credit_sales_to_new_listings": (
-                ZERO_CREDIT_SALES_TO_NEW_LISTINGS
-            ),
-            "full_credit_sales_to_new_listings": (
-                FULL_CREDIT_SALES_TO_NEW_LISTINGS
-            ),
+            "zero_credit_sales_to_new_listings": (ZERO_CREDIT_SALES_TO_NEW_LISTINGS),
+            "full_credit_sales_to_new_listings": (FULL_CREDIT_SALES_TO_NEW_LISTINGS),
             "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
         },
     }
@@ -599,11 +580,11 @@ def calculate_liquidity_inventory_component(
         market_context_age is None
         or not 0 <= market_context_age <= MAX_MARKET_CONTEXT_AGE_DAYS
     ):
-        unavailable_reason = "County liquidity and inventory context is missing or stale."
-    elif (active is None or active < 0) and (new is None or new <= 0):
         unavailable_reason = (
-            "County active- or new-listing inventory is unavailable."
+            "County liquidity and inventory context is missing or stale."
         )
+    elif (active is None or active < 0) and (new is None or new <= 0):
+        unavailable_reason = "County active- or new-listing inventory is unavailable."
 
     if unavailable_reason is not None:
         return {
@@ -640,10 +621,7 @@ def calculate_liquidity_inventory_component(
         )
         sales_flow_points = (
             (qualifying_sales_flow - ZERO_CREDIT_SALES_TO_NEW_LISTINGS)
-            / (
-                FULL_CREDIT_SALES_TO_NEW_LISTINGS
-                - ZERO_CREDIT_SALES_TO_NEW_LISTINGS
-            )
+            / (FULL_CREDIT_SALES_TO_NEW_LISTINGS - ZERO_CREDIT_SALES_TO_NEW_LISTINGS)
             * SALES_FLOW_MAX_POINTS
         )
 
@@ -719,9 +697,7 @@ def calculate_data_confidence_component(
     inputs = {
         "valuation_confidence_score": comparable_confidence,
         "valuation_confidence_label": valuation.get("confidence_label"),
-        "valuation_confidence_components": valuation.get(
-            "confidence_components"
-        ),
+        "valuation_confidence_components": valuation.get("confidence_components"),
         "available_substantive_max_points": available_max_points,
         "substantive_max_points": substantive_max_points,
         "coverage_ratio": coverage_ratio,
@@ -730,9 +706,7 @@ def calculate_data_confidence_component(
             for key in SUBSTANTIVE_COMPONENT_MAX_POINTS
         },
         "weights": {
-            "comparable_quality_max_points": (
-                COMPARABLE_CONFIDENCE_MAX_POINTS
-            ),
+            "comparable_quality_max_points": (COMPARABLE_CONFIDENCE_MAX_POINTS),
             "evidence_coverage_max_points": EVIDENCE_COVERAGE_MAX_POINTS,
         },
     }
@@ -752,9 +726,7 @@ def calculate_data_confidence_component(
         }
 
     comparable_quality_points = (
-        comparable_confidence
-        / Decimal("100")
-        * COMPARABLE_CONFIDENCE_MAX_POINTS
+        comparable_confidence / Decimal("100") * COMPARABLE_CONFIDENCE_MAX_POINTS
     )
     evidence_coverage_points = coverage_ratio * EVIDENCE_COVERAGE_MAX_POINTS
     points = (comparable_quality_points + evidence_coverage_points).quantize(
@@ -798,8 +770,9 @@ def calculate_deal_score_v2(
             raise ValueError(f"Duplicate Deal Score v2 component: {key}")
         if component.get("scoring_version") != SCORING_VERSION:
             raise ValueError(f"Component {key} uses a different scoring version")
-        if _decimal(component.get("max_points")) != (
-            DEAL_SCORE_COMPONENT_MAX_POINTS[key]
+        if (
+            _decimal(component.get("max_points"))
+            != (DEAL_SCORE_COMPONENT_MAX_POINTS[key])
         ):
             raise ValueError(f"Component {key} has an unexpected maximum")
         components_by_key[key] = component

@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import Engine, text
 
 from app.db import get_engine
+from app.market.analysis_dates import analysis_today
 from app.ingest.load_redfin_county_sales import load_redfin_county_sales
 from app.ingest.load_wayne_county_comparable_sales import (
     import_wayne_county_comparable_sales,
@@ -91,11 +92,9 @@ def run_shadow_pipeline(
     """Run data refresh, valuation, and review with no alert code path."""
 
     engine = engine or get_engine()
-    as_of_date = as_of_date or date.today()
+    as_of_date = as_of_date or analysis_today()
     with engine.begin() as connection:
-        run_id = connection.execute(
-            START_RUN_SQL, {"source": source}
-        ).scalar_one()
+        run_id = connection.execute(START_RUN_SQL, {"source": source}).scalar_one()
 
     details: dict[str, Any] = {
         "as_of_date": as_of_date,
@@ -130,10 +129,14 @@ def run_shadow_pipeline(
             report_args["output_path"] = output_path
         details["review"] = build_shadow_scoring_review(**report_args)
         with engine.connect() as connection:
-            metrics = dict(connection.execute(
-                METRICS_SQL,
-                {"source": source, "as_of_date": as_of_date},
-            ).mappings().one())
+            metrics = dict(
+                connection.execute(
+                    METRICS_SQL,
+                    {"source": source, "as_of_date": as_of_date},
+                )
+                .mappings()
+                .one()
+            )
         with engine.begin() as connection:
             connection.execute(
                 FINISH_RUN_SQL,
