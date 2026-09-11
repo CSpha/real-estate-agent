@@ -62,7 +62,7 @@ alerts. Promotion to alert-eligible ingestion remains intentionally disabled.
 
 The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
 
-1. Monitor the enabled weekly shadow runner and accumulate the required
+1. Monitor the enabled three-day shadow runner and accumulate the required
    observations. All 21 flags have an evidence review; 73 homes have complete
    scores, and all listings remain in shadow mode.
 2. Retain the original database, fresh cutover backup, and legacy archive for
@@ -73,7 +73,7 @@ The core prototype is now substantially more capable than the original roadmap s
 5. Add geographic bounding-box criteria once provider coordinates are available.
 6. Continue improving the deal-scoring model so it combines comparable valuation, local market context, price-change history, and confidence more transparently.
 7. Add a separately deployed long-running alert worker only after promotion;
-   the alert-isolated weekly shadow scheduler is implemented.
+   the alert-isolated three-day shadow scheduler is implemented.
 8. Add structured logging, authentication, monitoring, and backup automation;
    shadow pipeline-run history is implemented.
 9. Extend `/health` to report sync freshness and backlog health, not just database connectivity.
@@ -653,16 +653,15 @@ sales each; their matching omits year built, beds, and baths. This review did no
 independently verify condition, price terms, or transaction validity and did not
 change alert or scoring eligibility.
 
-The Docker shadow runner is active with a 168-hour interval, a 168-hour initial
-delay, and the existing 6-hour failure retry. It was rebuilt on September 9 to
-include ingest-error persistence; its first attempt is due around September 16
-at 10:43 UTC / 6:43 a.m. Eastern, provided the host and Docker remain running.
-Process restarts reapply the initial delay. Startup,
-database selection, absence of Slack configuration, and readiness were verified.
+The Docker shadow runner now uses a 72-hour interval and the existing 6-hour
+failure retry. Deadlines are recovered from database run history across restarts,
+with an initial deadline persisted in the data directory only when no history
+exists. The 14-day observation window starts at the first successful run;
+coverage is checked on the latest three successful run dates.
 Generated reports persist at `data/shadow-runner/shadow_scoring_review.csv`.
 Readiness still has one successful observation date.
 
-1. Monitor the weekly runner and review new reports. Obtain the requested evidence
+1. Monitor the three-day runner and review new reports. Obtain the requested evidence
    for flagged listings before promotion; no flag was cleared by this data review.
 Revision `0015_ingest_errors` is deployed. A September 9 refresh fetched 2,849
 records, normalized 2,042, inserted 71 new raw payloads, and updated 4 current
@@ -671,7 +670,7 @@ pipe-delimited living-area and year-built values, mostly for multiple dwellings,
 and 1 uses an abbreviated city spelling absent from the parser. These records
 remain quarantined rather than selecting an arbitrary value. The aggregate
 report exposes reason counts without raw payloads. Idempotency is covered by the
-integration suite, and the rebuilt weekly runner includes this behavior.
+integration suite, and the rebuilt three-day runner includes this behavior.
 
 2. Decide whether to add an explicit Fredericksburg abbreviation mapping after
    confirming the auditor's address convention. Keep multi-value property records

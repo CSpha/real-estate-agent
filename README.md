@@ -156,7 +156,7 @@ The review writes `data/shadow_scoring_review.csv` (ignored by Git) with every
 listing's market context, comparable result, review score, property type, price,
 square footage, days on market, missing fields, and policy decision.
 
-Run the dedicated pipeline once, or start its weekly Docker scheduler:
+Run the dedicated pipeline once, or start its three-day Docker scheduler:
 
 ```powershell
 python -m app.shadow.run_pipeline
@@ -169,9 +169,10 @@ no alert module. It refreshes Redfin context, RentCast listings, auditor sales,
 valuations, the review report, and `shadow_pipeline_runs`. Promotion remains
 blocked until three successful run dates span at least 14 days, no shadow
 listing has become alert-eligible, and at least 70% of comparable-ready homes
-have supported valuations. The default cadence is seven days and can be changed
-with `SHADOW_INTERVAL_HOURS`. Set `SHADOW_INITIAL_DELAY_HOURS` when recreating a
-runner immediately after a manual run to avoid consuming another provider call.
+have supported valuations. The default cadence is three days and can be changed
+with `SHADOW_INTERVAL_HOURS`. The next deadline is recovered from persisted run history, including manual runs.
+`SHADOW_INITIAL_DELAY_HOURS` applies only before any run history exists; its
+initial deadline is persisted under the mounted data directory.
 
 The shadow service persists its generated CSV under
 `data/shadow-runner/shadow_scoring_review.csv` on the host. Manual review commands
@@ -180,9 +181,11 @@ by Git. View scheduler activity with
 `docker compose --profile shadow logs --tail 50 shadow-runner`, and stop it with
 `docker compose --profile shadow stop shadow-runner`.
 
-The scheduler waits 168 hours after each successful run and retries failures
-after 6 hours by default. Its initial delay applies on every process restart;
-it is not a fixed wall-clock appointment. Docker Desktop and the host must stay
+The scheduler runs 72 hours after each successful completion and retries failures
+after 6 hours by default. Restarts preserve the deadline; an overdue attempt
+runs on startup. An interrupted run is retried six hours after its start.
+The 14-day readiness window starts at the first successful run; valuation
+coverage is checked across the latest three successful run dates. Docker Desktop and the host must stay
 running for scheduled work to execute.
 
 Load real monthly Wayne County market context from Redfin, then refresh the
@@ -320,3 +323,26 @@ evidence is reused while backfilled or changed history produces a new auditable
 component. The Deal Score v2 calculation and persistence model is used by the
 dedicated shadow pipeline and review report. It is still isolated from
 saved-search and alert logic; promotion remains a separate, gated decision.
+
+## Database availability
+
+Postgres uses `restart: unless-stopped`, also applied to the existing container
+without interrupting it. Docker restarts it after a crash or daemon restart
+unless it was explicitly stopped. Docker Desktop must still be running; an
+intentional `docker stop` requires starting the container again. This is not a
+host startup or power-management setting.
+
+## Operational health and backups
+
+`GET /health` reports database connectivity and shadow-pipeline history: last
+successful completion, its age in seconds, expected next attempt, latest run
+status, and up to five failure timestamps from the last seven days. It reports
+`degraded` for missing or stale history; freshness allows the configured
+72-hour interval plus a 6-hour retry grace period. Database failures return 503.
+A successful run timestamp is a freshness proxy, not a scheduler heartbeat or
+proof that every provider record is current. The next run is unknown until
+history exists. Local Docker API access is at `http://127.0.0.1:8000/health`.
+
+Daily backups and isolated restore verification are described in
+[Postgres backups](docs/postgres-backups.md). The first backup is immediate;
+subsequent backups preserve their 24-hour deadline across restarts.

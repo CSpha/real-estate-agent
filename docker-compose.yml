@@ -10,6 +10,7 @@ services:
       - "${DB_PORT-${POSTGRES_PORT:-5432}}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test:
         - CMD-SHELL
@@ -28,12 +29,14 @@ services:
       DB_NAME: ${DB_NAME-${POSTGRES_DB:-realestate}}
       DB_USER: ${DB_USER-${POSTGRES_USER:-realestate}}
       DB_PASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
+      SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-72}
+      SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}
     command:
       - sh
       - -c
       - python -m alembic upgrade head && uvicorn app.api:app --host 0.0.0.0 --port 8000
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,7 +53,7 @@ services:
       DB_USER: ${DB_USER-${POSTGRES_USER:-realestate}}
       DB_PASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
       RENTCAST_API_KEY: ${RENTCAST_API_KEY:?Set RENTCAST_API_KEY in .env}
-      SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-168}
+      SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-72}
       SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}
       SHADOW_INITIAL_DELAY_HOURS: ${SHADOW_INITIAL_DELAY_HOURS:-0}
     volumes:
@@ -59,6 +62,26 @@ services:
       - sh
       - -c
       - python -m alembic upgrade head && python -m app.shadow.scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backup:
+    profiles: ["backup"]
+    build:
+      context: .
+      dockerfile: scripts/backup.Dockerfile
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME-${POSTGRES_DB:-realestate}}
+      DB_USER: ${DB_USER-${POSTGRES_USER:-realestate}}
+      PGPASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - ./data/backups:/backups
     depends_on:
       postgres:
         condition: service_healthy
