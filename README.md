@@ -245,6 +245,13 @@ Run the API:
 python -m app.api
 ```
 
+With the API running, open `http://127.0.0.1:8000/dashboard` to use the local
+Property Signal dashboard. It shows pipeline health, shadow-promotion readiness,
+recent runs, and the current listing scores from Postgres. Listings can be
+searched, filtered, sorted, and opened to inspect their valuation evidence and
+score components. The dashboard is read-only and clearly marks the data as
+provisional; it does not enable alerts or change listing records.
+
 ## Comparable valuation and Deal Score v2
 
 Valuation analysis dates are UTC calendar days, including the default date for

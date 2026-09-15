@@ -2,21 +2,31 @@ import json
 import os
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import get_connection
 from app.analyst import create_analysis
+from app.dashboard.data import build_dashboard_data
 from app.searches.router import router as saved_searches_router
 from app.utils.db import get_engine
 
 
 app = FastAPI(title="Real Estate Agent API")
 app.include_router(saved_searches_router)
+DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+app.mount(
+    "/dashboard-assets",
+    StaticFiles(directory=DASHBOARD_DIR),
+    name="dashboard-assets",
+)
 
 
 SHADOW_HEALTH_SQL = text(
@@ -130,6 +140,22 @@ def analyst_feature_enabled() -> bool:
 @app.get("/")
 def root():
     return {"message": "Real Estate Agent API is running"}
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    return FileResponse(DASHBOARD_DIR / "index.html")
+
+
+@app.get("/dashboard/data", include_in_schema=False)
+def dashboard_data():
+    try:
+        return build_dashboard_data(engine=get_engine())
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Dashboard data is unavailable",
+        ) from exc
 
 
 @app.get("/health")
