@@ -44,6 +44,9 @@ def test_dashboard_summary_counts_review_and_score_availability():
             "confidence_label": "medium",
             "review_flags": [],
             "alert_eligible": False,
+            "monthly_rent": 1800,
+            "monthly_cash_flow": 125,
+            "rental_loan_constraint": "ltv",
         },
         {
             "scoring_eligible": True,
@@ -53,6 +56,9 @@ def test_dashboard_summary_counts_review_and_score_availability():
             "confidence_label": None,
             "review_flags": ["Missing square footage"],
             "alert_eligible": False,
+            "monthly_rent": None,
+            "monthly_cash_flow": None,
+            "rental_loan_constraint": None,
         },
     ]
 
@@ -67,4 +73,7 @@ def test_dashboard_summary_counts_review_and_score_availability():
         "missing_sqft_count": 1,
         "review_count": 1,
         "alert_eligible_count": 0,
+        "rent_estimate_count": 1,
+        "positive_cash_flow_count": 1,
+        "dscr_constrained_count": 0,
     }

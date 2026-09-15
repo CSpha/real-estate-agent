@@ -30,7 +30,21 @@ LISTINGS_SQL = text(
         score.status AS deal_score_status, score.total_points AS deal_score_total,
         score.available_points, score.available_max_points,
         score.coverage_pct AS deal_score_coverage_pct,
-        score.normalized_available_score, score.reason AS deal_score_reason
+        score.normalized_available_score, score.reason AS deal_score_reason,
+        rent.as_of_date AS rent_estimate_date, rent.monthly_rent,
+        rent.rent_range_low, rent.rent_range_high,
+        rent.comparable_count AS rental_comparable_count,
+        rental.analysis_version AS rental_analysis_version,
+        rental.gross_yield_pct, rental.monthly_noi, rental.cap_rate_pct,
+        rental.monthly_cash_flow, rental.target_dscr,
+        rental.underwritten_dscr, rental.interest_rate_pct,
+        rental.term_years, rental.max_ltv_pct, rental.max_loan_by_dscr,
+        rental.ltv_cap_loan, rental.target_loan_amount,
+        rental.target_ltv_pct, rental.down_payment,
+        rental.monthly_principal_interest, rental.monthly_pitia,
+        rental.minimum_rent_for_target_dscr,
+        rental.constraint AS rental_loan_constraint,
+        rental.calculation_json AS rental_calculation
     FROM listings_current listing
     LEFT JOIN listing_market_scores market
       ON market.source = listing.source
@@ -50,6 +64,21 @@ LISTINGS_SQL = text(
         ORDER BY aggregate.created_at DESC, aggregate.id DESC
         LIMIT 1
     ) score ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT estimate.*
+        FROM listing_rent_estimates estimate
+        WHERE estimate.source = listing.source
+          AND estimate.source_listing_id = listing.source_listing_id
+        ORDER BY estimate.as_of_date DESC, estimate.created_at DESC, estimate.id DESC
+        LIMIT 1
+    ) rent ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT analysis.*
+        FROM rental_underwriting_analyses analysis
+        WHERE analysis.rent_estimate_id = rent.id
+        ORDER BY analysis.created_at DESC, analysis.id DESC
+        LIMIT 1
+    ) rental ON TRUE
     WHERE listing.source = :source
     ORDER BY
         COALESCE(score.total_points, score.normalized_available_score) DESC NULLS LAST,
@@ -123,6 +152,14 @@ def summarize(listings: list[dict[str, Any]]) -> dict[str, int]:
         ),
         "review_count": sum(bool(row["review_flags"]) for row in listings),
         "alert_eligible_count": sum(bool(row["alert_eligible"]) for row in listings),
+        "rent_estimate_count": sum(row["monthly_rent"] is not None for row in listings),
+        "positive_cash_flow_count": sum(
+            row["monthly_cash_flow"] is not None and row["monthly_cash_flow"] > 0
+            for row in listings
+        ),
+        "dscr_constrained_count": sum(
+            row["rental_loan_constraint"] == "dscr" for row in listings
+        ),
     }
 
 

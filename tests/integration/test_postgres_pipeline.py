@@ -45,6 +45,7 @@ from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
 )
 from app.market.mortgage_rates import get_rate_trend, load_pmms_csv
+from app.providers.rentcast_rent import RentEstimate
 from app.reports.ingest_errors import summarize_ingest_errors
 from app.searches.models import (
     SavedSearchCreate,
@@ -65,6 +66,7 @@ from app.transforms.persist_comparable_valuation import (
     persist_comparable_valuation,
 )
 from app.transforms.snapshot_listings import snapshot_current_listings
+from app.transforms.sync_rent_estimates import sync_rent_estimates
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -187,7 +189,111 @@ def test_sample_ingestion_and_history_are_idempotent(postgres_engine):
             )
         ).one()
         assert normalized.status == "Active"
-        assert normalized.property_type == "SingleFamilyResidence"
+    assert normalized.property_type == "SingleFamilyResidence"
+
+
+def test_rent_estimate_sync_is_bounded_and_reuses_fresh_inputs(postgres_engine):
+    class Provider:
+        provider_name = "fake_rent_avm"
+
+        def __init__(self):
+            self.calls = 0
+
+        def build_request(self, listing):
+            return {
+                "address": listing["address"],
+                "bedrooms": listing["beds"],
+                "bathrooms": listing["baths"],
+                "squareFootage": listing["sqft"],
+            }
+
+        def estimate(self, listing):
+            self.calls += 1
+            request = self.build_request(listing)
+            return RentEstimate(
+                monthly_rent=Decimal("1450"),
+                rent_range_low=Decimal("1350"),
+                rent_range_high=Decimal("1550"),
+                comparables=[{"id": "rent-comp-1"}],
+                request=request,
+                response={
+                    "rent": 1450,
+                    "rentRangeLow": 1350,
+                    "rentRangeHigh": 1550,
+                    "comparables": [{"id": "rent-comp-1"}],
+                },
+            )
+
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO listings_current (
+                    source, source_listing_id, address, city, state, zip,
+                    list_price, beds, baths, sqft, property_type, status,
+                    scoring_eligible, alert_eligible
+                ) VALUES (
+                    'rental_test', 'one', '1 Rent Test St', 'Wooster', 'OH',
+                    '44691', 120000, 3, 2, 1500, 'SingleFamilyResidence',
+                    'Active', TRUE, FALSE
+                )
+                """
+            )
+        )
+    try:
+        provider = Provider()
+        first = sync_rent_estimates(
+            source="rental_test",
+            as_of_date=date(2026, 9, 15),
+            max_requests=1,
+            engine=postgres_engine,
+            provider=provider,
+        )
+        repeated = sync_rent_estimates(
+            source="rental_test",
+            as_of_date=date(2026, 9, 15),
+            max_requests=1,
+            engine=postgres_engine,
+            provider=provider,
+        )
+
+        assert first.api_requests == 1
+        assert first.estimates_created == 1
+        assert first.analyses_created == 1
+        assert repeated.api_requests == 0
+        assert repeated.fresh_estimates_reused == 1
+        assert repeated.analyses_created == 0
+        assert provider.calls == 1
+        with postgres_engine.connect() as conn:
+            estimate = conn.execute(
+                text(
+                    """
+                    SELECT monthly_rent, comparable_count
+                    FROM listing_rent_estimates
+                    WHERE source = 'rental_test'
+                    """
+                )
+            ).one()
+            analysis = conn.execute(
+                text(
+                    """
+                    SELECT target_dscr, target_loan_amount, constraint,
+                           calculation_json
+                    FROM rental_underwriting_analyses
+                    """
+                )
+            ).one()
+        assert estimate.monthly_rent == Decimal("1450.00")
+        assert estimate.comparable_count == 1
+        assert analysis.target_dscr == Decimal("1.250")
+        assert analysis.target_loan_amount > 0
+        assert analysis.constraint in {"dscr", "ltv"}
+        assert analysis.calculation_json["assumptions"]["target_dscr"] == "1.25"
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM listings_current WHERE source = 'rental_test'")
+            )
 
 
 def test_comparable_sales_ingestion_is_idempotent(postgres_engine):

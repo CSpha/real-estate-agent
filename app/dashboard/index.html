@@ -61,6 +61,8 @@
         <article><span>Complete scores</span><strong id="score-count">—</strong></article>
         <article><span>Needs review</span><strong id="review-count">—</strong></article>
         <article><span>Missing area</span><strong id="missing-count">—</strong></article>
+        <article><span>Rent estimates</span><strong id="rent-count">—</strong></article>
+        <article><span>Positive cash flow</span><strong id="cash-flow-count">—</strong></article>
       </section>
 
       <section class="readiness-panel" aria-labelledby="readiness-title">
@@ -88,13 +90,18 @@
           </select></label>
           <label><span>Sort</span><select id="sort-select">
             <option value="score">Deal score</option><option value="discount">Estimated discount</option>
+            <option value="cash_flow">Monthly cash flow</option><option value="gross_yield">Gross rent yield</option>
             <option value="price">Lowest price</option><option value="dom">Days on market</option>
+          </select></label>
+          <label><span>Rental</span><select id="rental-filter">
+            <option value="">All listings</option><option value="estimated">Rent estimated</option>
+            <option value="positive">Positive cash flow</option><option value="dscr">DSCR constrained</option>
           </select></label>
           <label class="review-toggle"><input id="review-filter" type="checkbox"><span>Needs review only</span></label>
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Property</th><th>Price</th><th>Deal score</th><th>Est. discount</th><th>Confidence</th><th>Days listed</th><th>Review</th></tr></thead>
+            <thead><tr><th>Property</th><th>Price</th><th>Deal score</th><th>Est. discount</th><th>Rent</th><th>Cash flow</th><th>DSCR loan</th><th>Confidence</th><th>Days listed</th><th>Review</th></tr></thead>
             <tbody id="listing-rows"></tbody>
           </table>
           <div class="empty-state" id="empty-state" hidden>No listings match these filters.</div>

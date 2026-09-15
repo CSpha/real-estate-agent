@@ -17,6 +17,7 @@ const formatAge = (seconds) => {
 const money = (value) => value == null ? "—" : new Intl.NumberFormat(undefined, {
   style: "currency", currency: "USD", maximumFractionDigits: 0,
 }).format(value);
+const signedMoney = (value) => value == null ? "—" : `${Number(value) >= 0 ? "+" : ""}${money(value)}`;
 const number = (value, digits = 0) => value == null ? "—" : Number(value).toFixed(digits);
 const percent = (value) => value == null ? "—" : `${(Number(value) * 100).toFixed(1)}%`;
 const label = (value) => value
@@ -61,6 +62,8 @@ function renderSummary(data) {
   document.querySelector("#score-count").textContent = summary.complete_score_count;
   document.querySelector("#review-count").textContent = summary.review_count;
   document.querySelector("#missing-count").textContent = summary.missing_sqft_count;
+  document.querySelector("#rent-count").textContent = summary.rent_estimate_count;
+  document.querySelector("#cash-flow-count").textContent = summary.positive_cash_flow_count;
   document.querySelector("#observation-days").textContent = data.readiness.observation_days;
   document.querySelector("#valuation-coverage").textContent = `${(data.readiness.minimum_supported_valuation_coverage * 100).toFixed(1)}%`;
   const checks = data.readiness.checks;
@@ -74,6 +77,7 @@ function filteredListings() {
   const query = document.querySelector("#search-input").value.trim().toLowerCase();
   const city = document.querySelector("#city-filter").value;
   const confidence = document.querySelector("#confidence-filter").value;
+  const rental = document.querySelector("#rental-filter").value;
   const reviewOnly = document.querySelector("#review-filter").checked;
   const sort = document.querySelector("#sort-select").value;
   const rows = state.listings.filter((row) => {
@@ -81,10 +85,15 @@ function filteredListings() {
     const actualConfidence = row.confidence_label ?? "unavailable";
     return (!query || haystack.includes(query)) && (!city || row.city === city)
       && (!confidence || actualConfidence === confidence)
+      && (!rental || (rental === "estimated" && row.monthly_rent != null)
+        || (rental === "positive" && Number(row.monthly_cash_flow) > 0)
+        || (rental === "dscr" && row.rental_loan_constraint === "dscr"))
       && (!reviewOnly || row.review_flags.length > 0);
   });
   const descending = (key) => (left, right) => (right[key] ?? -Infinity) - (left[key] ?? -Infinity);
   if (sort === "discount") rows.sort(descending("valuation_discount_pct"));
+  else if (sort === "cash_flow") rows.sort(descending("monthly_cash_flow"));
+  else if (sort === "gross_yield") rows.sort(descending("gross_yield_pct"));
   else if (sort === "price") rows.sort((left, right) => (left.list_price ?? Infinity) - (right.list_price ?? Infinity));
   else if (sort === "dom") rows.sort(descending("days_on_market"));
   else rows.sort((left, right) => (dealScore(right) ?? -Infinity) - (dealScore(left) ?? -Infinity));
@@ -107,6 +116,9 @@ function renderListings() {
       <td data-label="Price">${money(row.list_price)}</td>
       <td data-label="Deal score"><span class="${score == null ? "muted-value" : "score-value"}">${number(score, 1)}</span></td>
       <td data-label="Est. discount">${percent(row.valuation_discount_pct)}</td>
+      <td data-label="Rent">${money(row.monthly_rent)}</td>
+      <td data-label="Cash flow"><span class="${row.monthly_cash_flow == null ? "muted-value" : Number(row.monthly_cash_flow) >= 0 ? "positive-value" : "negative-value"}">${signedMoney(row.monthly_cash_flow)}</span></td>
+      <td data-label="DSCR loan">${money(row.target_loan_amount)}</td>
       <td data-label="Confidence"><span class="badge ${escapeHtml(row.confidence_label || "")}">${escapeHtml(label(row.confidence_label))}</span></td>
       <td data-label="Days listed">${row.days_on_market ?? "—"}</td>
       <td data-label="Review">${review}</td>
@@ -132,9 +144,19 @@ function openDetail(row) {
   }).join("") || `<p class="muted-value">No component score is available.</p>`;
   const flags = row.review_flags.length
     ? `<div class="flag-list"><strong>Review before relying on this score</strong><ul>${row.review_flags.map((flag) => `<li>${escapeHtml(flag)}</li>`).join("")}</ul></div>` : "";
+  const assumptions = row.rental_calculation?.assumptions ?? {};
+  const rateBasis = row.rental_calculation?.rate_basis ?? {};
+  const rateBasisCopy = rateBasis.basis === "freddie_mac_pmms_plus_spread"
+    ? `PMMS ${number(rateBasis.benchmark_rate_pct, 3)}% as of ${escapeHtml(rateBasis.benchmark_date)} plus ${number(rateBasis.spread_pct, 2)} points.`
+    : "Fallback screening rate; no PMMS observation was available for the analysis date.";
+  const rental = row.monthly_rent == null
+    ? `<section class="rental-panel unavailable"><p class="eyebrow">Rental underwriting</p><h3>Rent estimate unavailable</h3><p>Run the bounded rent-estimate sync to add rental and DSCR analysis.</p></section>`
+    : row.rental_analysis_version == null
+      ? `<section class="rental-panel unavailable"><p class="eyebrow">Rental underwriting</p><h3>${money(row.monthly_rent)} estimated monthly rent</h3><p>The rent AVM is stored, but its underwriting analysis is unavailable.</p></section>`
+      : `<section class="rental-panel"><p class="eyebrow">Rental underwriting</p><div class="rental-heading"><div><h3>${money(row.monthly_rent)} estimated monthly rent</h3><p>${money(row.rent_range_low)}–${money(row.rent_range_high)} range · ${row.rental_comparable_count ?? 0} rental comps · ${escapeHtml(formatDate(row.rent_estimate_date))}</p></div><span class="badge ${row.rental_loan_constraint === "dscr" ? "review" : "high"}">${escapeHtml(label(row.rental_loan_constraint))} constrained</span></div><div class="detail-stats"><div><span>Target DSCR loan</span><strong>${money(row.target_loan_amount)}</strong></div><div><span>Required down payment</span><strong>${money(row.down_payment)} · ${number(100 - Number(row.target_ltv_pct), 1)}%</strong></div><div><span>Underwritten DSCR</span><strong>${number(row.underwritten_dscr, 2)}×</strong></div><div><span>Monthly PITIA</span><strong>${money(row.monthly_pitia)}</strong></div><div><span>Projected cash flow</span><strong class="${Number(row.monthly_cash_flow) >= 0 ? "positive-value" : "negative-value"}">${signedMoney(row.monthly_cash_flow)}</strong></div><div><span>Cap rate / gross yield</span><strong>${number(row.cap_rate_pct, 2)}% / ${number(row.gross_yield_pct, 2)}%</strong></div></div><p class="assumption-copy">Targets ${number(row.target_dscr, 2)}× DSCR and at most ${number(row.max_ltv_pct, 0)}% LTV at ${number(row.interest_rate_pct, 3)}% over ${row.term_years} years. ${rateBasisCopy} Minimum qualifying rent at this loan is ${money(row.minimum_rent_for_target_dscr)}. Assumptions: ${number(assumptions.property_tax_rate_pct, 2)}% tax, ${number(assumptions.insurance_rate_pct, 2)}% insurance, ${number(assumptions.vacancy_pct, 1)}% vacancy, ${number(assumptions.management_pct, 1)}% management, ${number(assumptions.maintenance_pct, 1)}% maintenance, ${number(assumptions.capital_reserve_pct, 1)}% capital reserves, and ${money(assumptions.monthly_hoa)} monthly HOA. This is an underwriting scenario, not a lender quote.</p></section>`;
   document.querySelector("#detail-content").innerHTML = `<header class="detail-header"><p class="eyebrow">${escapeHtml(row.source_listing_id)}</p><h2 id="detail-title">${escapeHtml(row.address || "Address unavailable")}</h2><p>${escapeHtml(row.city)}, ${escapeHtml(row.state)} ${escapeHtml(row.zip)} · ${escapeHtml(label(row.property_type))}</p></header>
     ${flags}<div class="detail-stats"><div><span>List price</span><strong>${money(row.list_price)}</strong></div><div><span>Deal score</span><strong>${number(dealScore(row), 1)}</strong></div><div><span>Estimated value</span><strong>${money(row.estimated_value)}</strong></div><div><span>Value range</span><strong>${money(row.estimated_value_low)}–${money(row.estimated_value_high)}</strong></div><div><span>Comparable confidence</span><strong>${escapeHtml(label(row.confidence_label))} ${row.confidence_score == null ? "" : `(${number(row.confidence_score, 1)})`}</strong></div><div><span>Comparable set</span><strong>${row.included_comparable_count ?? 0} of ${row.available_comparable_count ?? 0}</strong></div><div><span>Home details</span><strong>${row.beds ?? "—"} bd · ${row.baths ?? "—"} ba · ${row.sqft ? `${Number(row.sqft).toLocaleString()} ft²` : "area missing"}</strong></div><div><span>Days listed</span><strong>${row.days_on_market ?? "—"}</strong></div></div>
-    <section class="component-list"><p class="eyebrow">Score components</p>${components}</section>`;
+    ${rental}<section class="component-list"><p class="eyebrow">Score components</p>${components}</section>`;
   document.querySelector("#drawer-backdrop").hidden = false;
   const drawer = document.querySelector("#detail-drawer");
   drawer.classList.add("open");
@@ -167,7 +189,7 @@ async function loadDashboard() {
 }
 
 document.querySelector("#search-input").addEventListener("input", renderListings);
-document.querySelectorAll("#city-filter, #confidence-filter, #sort-select, #review-filter")
+document.querySelectorAll("#city-filter, #confidence-filter, #sort-select, #rental-filter, #review-filter")
   .forEach((control) => control.addEventListener("change", renderListings));
 document.querySelector("#listing-rows").addEventListener("click", (event) => {
   const row = event.target.closest("tr[data-index]");

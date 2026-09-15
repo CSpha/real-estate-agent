@@ -252,6 +252,38 @@ searched, filtered, sorted, and opened to inspect their valuation evidence and
 score components. The dashboard is read-only and clearly marks the data as
 provisional; it does not enable alerts or change listing records.
 
+## Rental estimates and DSCR underwriting
+
+Apply the rental-underwriting schema, then run a bounded RentCast long-term rent
+estimate refresh:
+
+```powershell
+python -m alembic upgrade head
+python -m app.transforms.sync_rent_estimates --max-requests 25
+```
+
+The command skips unchanged estimates that are less than 30 days old and caps
+new successful RentCast requests at 25 per invocation. This cap matters because
+RentCast counts each successful property AVM request against the account's
+monthly allowance and may charge overages. It prints aggregate results without
+printing addresses or API response bodies.
+
+Each immutable rent estimate stores the request inputs, estimate range, rental
+comparables, provider response, analysis date, and input fingerprint. Its linked
+rental analysis stores a reproducible acquisition scenario with monthly cash
+flow, gross yield, cap rate, and loan sizing.
+
+The initial DSCR target is 1.25 with a 75% maximum LTV and 30-year amortization.
+The assumed DSCR interest rate is the latest stored Freddie Mac 30-year PMMS
+benchmark plus 1.50 percentage points, falling back to 8.00% when no benchmark
+is available. This is a screening assumption rather than a lender quote.
+Property tax is estimated at 1.50% of purchase price annually, insurance at
+0.50%, vacancy at 5%, management at 8%, maintenance at 8%, capital reserves at
+5%, and HOA at zero. The analysis sizes the target loan to the lower of the LTV
+cap or the loan supported by gross monthly rent divided by monthly PITIA at the
+target DSCR. The dashboard exposes the constraint, loan amount, down payment,
+PITIA, minimum qualifying rent, and all assumptions for review.
+
 ## Comparable valuation and Deal Score v2
 
 Valuation analysis dates are UTC calendar days, including the default date for

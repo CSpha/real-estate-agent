@@ -416,6 +416,17 @@ Do not hide every investment concern inside one number. Store and expose:
 The initial Deal Score v2 implementation should not require rental or risk data;
 those subscores can remain unavailable until reliable sources are connected.
 
+Rental underwriting baseline status:
+
+- [x] Add bounded RentCast long-term rent AVM retrieval with request fingerprints,
+  estimate ranges, comparables, immutable provider snapshots, and 30-day reuse.
+- [x] Add explicit monthly cash flow, gross yield, cap rate, and expense assumptions.
+- [x] Size a target DSCR loan at the lower of 1.25 DSCR support and 75% LTV,
+  using a stored PMMS-plus-spread rate basis and 30-year amortization.
+- [x] Expose rent and DSCR results in the local shadow-review dashboard.
+- [ ] Add market rent history and scenario growth rates before labeling the
+  current point-in-time AVM as a multi-year rent forecast.
+
 ### Explainability and safeguards
 
 Persist each input, normalized component score, weight, contribution, final
