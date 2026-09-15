@@ -659,7 +659,16 @@ with an initial deadline persisted in the data directory only when no history
 exists. The 14-day observation window starts at the first successful run;
 coverage is checked on the latest three successful run dates.
 Generated reports persist at `data/shadow-runner/shadow_scoring_review.csv`.
-Readiness still has one successful observation date.
+Readiness now has two successful observation dates spanning six days. The
+September 15 run retained 97.78% minimum supported-valuation coverage, and no
+shadow listing was alert-eligible. The next run is due September 18; the
+14-day observation window remains the automated blocker.
+
+A September 15 address audit found one single-dwelling residential Wayne County
+Auditor parcel for each of the nine scoring-eligible listings missing provider
+square footage. These values remain candidate evidence and have not been applied
+to listings or valuations. A source-tracked property-attribute evidence model is
+required before using them.
 
 1. Monitor the three-day runner and review new reports. Obtain the requested evidence
    for flagged listings before promotion; no flag was cleared by this data review.

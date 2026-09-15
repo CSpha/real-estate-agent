@@ -35,4 +35,11 @@ The first scheduled backup completed (658,239 bytes). An isolated restore
 matched 34 tables, 6,123 rows, 83 user indexes, and 95 constraint names. The test
 database was removed; a follow-up query found no remaining restore-test databases.
 Recreating the worker preserved its existing deadline instead of taking another
-dump. Next backup is September 12 around 11:07 UTC / 7:07 a.m. Eastern.
+dump.
+
+After Docker restarted on September 15, the worker initially reached Postgres
+before it was accepting connections, logged the failure, and retried safely. The
+overdue backup then completed (864,538 bytes). Its isolated restore matched 34
+tables, 7,656 rows, 83 user indexes, and 95 constraint names, and the temporary
+test database was removed. The next backup is due September 16 around 10:18 UTC
+/ 6:18 a.m. Eastern, provided Docker remains running.
