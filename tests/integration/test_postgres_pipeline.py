@@ -277,7 +277,7 @@ def test_rent_estimate_sync_is_bounded_and_reuses_fresh_inputs(postgres_engine):
             analysis = conn.execute(
                 text(
                     """
-                    SELECT target_dscr, target_loan_amount, constraint,
+                    SELECT target_dscr, target_loan_amount, "constraint",
                            calculation_json
                     FROM rental_underwriting_analyses
                     """

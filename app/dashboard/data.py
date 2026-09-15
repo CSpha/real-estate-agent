@@ -43,7 +43,7 @@ LISTINGS_SQL = text(
         rental.target_ltv_pct, rental.down_payment,
         rental.monthly_principal_interest, rental.monthly_pitia,
         rental.minimum_rent_for_target_dscr,
-        rental.constraint AS rental_loan_constraint,
+        rental."constraint" AS rental_loan_constraint,
         rental.calculation_json AS rental_calculation
     FROM listings_current listing
     LEFT JOIN listing_market_scores market

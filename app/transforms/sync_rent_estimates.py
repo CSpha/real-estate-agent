@@ -95,7 +95,7 @@ ANALYSIS_INSERT_SQL = text(
         term_years, max_ltv_pct, max_loan_by_dscr, ltv_cap_loan,
         target_loan_amount, target_ltv_pct, down_payment,
         monthly_principal_interest, monthly_pitia,
-        minimum_rent_for_target_dscr, constraint, calculation_json
+        minimum_rent_for_target_dscr, "constraint", calculation_json
     ) VALUES (
         :rent_estimate_id, :analysis_version, :input_fingerprint, :purchase_price,
         :monthly_rent, :gross_yield_pct, :monthly_noi, :cap_rate_pct,
