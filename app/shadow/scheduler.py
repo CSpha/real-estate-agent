@@ -12,6 +12,27 @@ from app.db import get_engine
 from app.shadow.run_pipeline import run_shadow_pipeline
 
 
+def rentcast_api_calls_enabled() -> bool:
+    """Require an explicit opt-in before a scheduled run can call RentCast."""
+
+    return os.getenv("SHADOW_ENABLE_RENTCAST_API_CALLS", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def run_scheduled_shadow_pipeline():
+    rentcast_enabled = rentcast_api_calls_enabled()
+    print(
+        "Scheduled RentCast API calls are "
+        f"{'enabled' if rentcast_enabled else 'disabled'}.",
+        flush=True,
+    )
+    return run_shadow_pipeline(skip_rentcast=not rentcast_enabled)
+
+
 def _positive_hours(name: str, default: int) -> int:
     raw = os.getenv(name, str(default))
     try:
@@ -88,7 +109,7 @@ def main() -> None:
         time.sleep(max(0, (deadline - datetime.now(timezone.utc)).total_seconds()))
         print(f"Starting shadow run at {datetime.now(timezone.utc).isoformat()}")
         try:
-            result = run_shadow_pipeline()
+            result = run_scheduled_shadow_pipeline()
         except Exception as exc:
             print(f"Shadow run failed: {type(exc).__name__}: {exc}")
             delay = retry_seconds

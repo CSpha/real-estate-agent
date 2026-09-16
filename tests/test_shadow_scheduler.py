@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import app.shadow.scheduler as scheduler
 from app.shadow.scheduler import next_run_at
 
 
@@ -42,3 +43,21 @@ def test_interval_change_uses_last_completion(tmp_path):
     assert next_run_at(engine, 72 * 3600, 21600, 0, state) == finished + timedelta(
         days=3
     )
+
+
+def test_scheduled_run_disables_rentcast_calls_by_default(monkeypatch):
+    monkeypatch.delenv("SHADOW_ENABLE_RENTCAST_API_CALLS", raising=False)
+    run_pipeline = MagicMock(return_value={"status": "succeeded"})
+    monkeypatch.setattr(scheduler, "run_shadow_pipeline", run_pipeline)
+
+    assert scheduler.run_scheduled_shadow_pipeline() == {"status": "succeeded"}
+    run_pipeline.assert_called_once_with(skip_rentcast=True)
+
+
+def test_scheduled_run_requires_explicit_rentcast_opt_in(monkeypatch):
+    monkeypatch.setenv("SHADOW_ENABLE_RENTCAST_API_CALLS", "true")
+    run_pipeline = MagicMock(return_value={"status": "succeeded"})
+    monkeypatch.setattr(scheduler, "run_shadow_pipeline", run_pipeline)
+
+    scheduler.run_scheduled_shadow_pipeline()
+    run_pipeline.assert_called_once_with(skip_rentcast=False)

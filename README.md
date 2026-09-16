@@ -165,8 +165,11 @@ python -m app.shadow.readiness
 ```
 
 The shadow runner has no Slack webhook in its container environment and imports
-no alert module. It refreshes Redfin context, RentCast listings, auditor sales,
-valuations, the review report, and `shadow_pipeline_runs`. Promotion remains
+no alert module. Scheduled runs do not call RentCast by default, so they reuse
+the listings and rent estimates already stored in Postgres while refreshing
+Redfin context, auditor sales, valuations, the review report, and
+`shadow_pipeline_runs`. A future scheduled RentCast listing refresh requires an
+explicit `SHADOW_ENABLE_RENTCAST_API_CALLS=true` opt-in. Promotion remains
 blocked until three successful run dates span at least 14 days, no shadow
 listing has become alert-eligible, and at least 70% of comparable-ready homes
 have supported valuations. The default cadence is three days and can be changed
