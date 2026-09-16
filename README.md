@@ -248,6 +248,14 @@ Run the API:
 python -m app.api
 ```
 
+Reviewed exact-match Auditor living-area evidence is stored separately before it
+updates a missing current-listing field. This preserves the provider history and
+records the parcel, matching method, review basis, and source payload fingerprint:
+
+```powershell
+python -m app.transforms.apply_auditor_sqft_candidates
+```
+
 With the API running, open `http://127.0.0.1:8000/dashboard` to use the local
 Property Signal dashboard. It shows pipeline health, shadow-promotion readiness,
 recent runs, and the current listing scores from Postgres. Listings can be
