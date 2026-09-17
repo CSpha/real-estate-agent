@@ -44,7 +44,8 @@ LISTINGS_SQL = text(
         rental.monthly_principal_interest, rental.monthly_pitia,
         rental.minimum_rent_for_target_dscr,
         rental."constraint" AS rental_loan_constraint,
-        rental.calculation_json AS rental_calculation
+        rental.calculation_json AS rental_calculation,
+        forecast.horizon_years, forecast.projection_json AS base_rental_forecast
     FROM listings_current listing
     LEFT JOIN listing_market_scores market
       ON market.source = listing.source
@@ -79,6 +80,14 @@ LISTINGS_SQL = text(
         ORDER BY analysis.created_at DESC, analysis.id DESC
         LIMIT 1
     ) rental ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT scenario.*
+        FROM rental_forecast_scenarios scenario
+        WHERE scenario.rental_analysis_id = rental.id
+          AND scenario.scenario_name = 'base'
+        ORDER BY scenario.created_at DESC, scenario.id DESC
+        LIMIT 1
+    ) forecast ON TRUE
     WHERE listing.source = :source
     ORDER BY
         COALESCE(score.total_points, score.normalized_available_score) DESC NULLS LAST,
