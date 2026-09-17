@@ -13,7 +13,11 @@ from app.market.deal_score_v2 import (
     calculate_listing_opportunity_component,
     calculate_market_momentum_component,
 )
-from app.market.deal_score_policy import DEFAULT_THRESHOLDS, DealScorePolicy
+from app.market.deal_score_policy import (
+    DEFAULT_THRESHOLDS,
+    DealScorePolicy,
+    validate_thresholds,
+)
 
 
 def _valuation(
@@ -83,6 +87,19 @@ def test_comparable_discount_uses_a_versioned_policy_threshold():
 
     assert component["points"] == Decimal("40.00")
     assert component["inputs"]["policy_version"] == "deal-score-thresholds-test"
+
+
+def test_policy_validation_rejects_missing_or_reversed_thresholds():
+    with pytest.raises(ValueError, match="schema"):
+        validate_thresholds({})
+    with pytest.raises(ValueError, match="must be less than"):
+        validate_thresholds(
+            {
+                **DEFAULT_THRESHOLDS,
+                "days_on_market_zero_point_ratio": "2",
+                "days_on_market_full_credit_ratio": "1",
+            }
+        )
 
 
 def _history(*prices_and_dates):

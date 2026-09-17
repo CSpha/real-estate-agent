@@ -384,6 +384,12 @@ leaving earlier results reproducible. There can be only one active policy.
 Create and review a new policy row before switching it active; after a change,
 run the valuation backfill to publish scores calculated under that policy.
 
+Use `python -m app.transforms.manage_deal_score_policy --show-active` to inspect
+the live policy. To make a reviewed JSON threshold file available, run
+`--create policy-name --thresholds-file policy.json`; activate it separately with
+`--activate policy-name`. Creation validates the complete threshold schema and
+activation is transactional, so there is always one active policy.
+
 ## Database availability
 
 Postgres uses `restart: unless-stopped`, also applied to the existing container

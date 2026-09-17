@@ -45,6 +45,40 @@ class DealScorePolicy:
 DEFAULT_POLICY = DealScorePolicy(DEFAULT_POLICY_VERSION, DEFAULT_THRESHOLDS)
 
 
+def validate_thresholds(thresholds: dict[str, Any]) -> dict[str, Any]:
+    if set(thresholds) != set(DEFAULT_THRESHOLDS):
+        missing = sorted(set(DEFAULT_THRESHOLDS) - set(thresholds))
+        extra = sorted(set(thresholds) - set(DEFAULT_THRESHOLDS))
+        raise ValueError(f"Policy thresholds must match the schema; missing={missing}, extra={extra}")
+    normalized = dict(thresholds)
+    for key in (
+        "minimum_confidence_score", "full_credit_discount",
+        "full_credit_cumulative_reduction", "full_credit_reduction_count",
+        "days_on_market_zero_point_ratio", "days_on_market_full_credit_ratio",
+        "market_momentum_floor_change", "market_momentum_full_credit_change",
+        "full_credit_inventory_months", "zero_credit_inventory_months",
+        "zero_credit_sales_to_new_listings", "full_credit_sales_to_new_listings",
+    ):
+        normalized[key] = str(Decimal(str(normalized[key])))
+    for key in (
+        "recent_reduction_full_credit_days", "recent_reduction_partial_credit_days",
+        "max_listing_evidence_age_days", "max_market_context_age_days",
+    ):
+        normalized[key] = int(normalized[key])
+    if not 0 <= Decimal(normalized["minimum_confidence_score"]) <= 100:
+        raise ValueError("minimum_confidence_score must be between 0 and 100")
+    for low, high in (
+        ("recent_reduction_full_credit_days", "recent_reduction_partial_credit_days"),
+        ("days_on_market_zero_point_ratio", "days_on_market_full_credit_ratio"),
+        ("market_momentum_floor_change", "market_momentum_full_credit_change"),
+        ("full_credit_inventory_months", "zero_credit_inventory_months"),
+        ("zero_credit_sales_to_new_listings", "full_credit_sales_to_new_listings"),
+    ):
+        if Decimal(str(normalized[low])) >= Decimal(str(normalized[high])):
+            raise ValueError(f"{low} must be less than {high}")
+    return normalized
+
+
 def load_active_policy(connection: Connection) -> DealScorePolicy:
     row = connection.execute(
         text(
@@ -52,8 +86,5 @@ def load_active_policy(connection: Connection) -> DealScorePolicy:
             "WHERE is_active = TRUE"
         )
     ).mappings().one()
-    thresholds = dict(row["thresholds"])
-    missing = set(DEFAULT_THRESHOLDS) - set(thresholds)
-    if missing:
-        raise ValueError(f"Deal Score policy is missing thresholds: {sorted(missing)}")
+    thresholds = validate_thresholds(dict(row["thresholds"]))
     return DealScorePolicy(row["policy_version"], thresholds)
