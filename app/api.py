@@ -1,11 +1,13 @@
 import json
+import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -17,6 +19,7 @@ from app.analyst import create_analysis
 from app.dashboard.data import build_dashboard_data
 from app.searches.router import router as saved_searches_router
 from app.utils.db import get_engine
+from app.api_security import rate_limiter, require_api_token
 
 
 app = FastAPI(title="Real Estate Agent API")
@@ -27,6 +30,42 @@ app.mount(
     StaticFiles(directory=DASHBOARD_DIR),
     name="dashboard-assets",
 )
+
+request_logger = logging.getLogger("real_estate_agent.request")
+if not request_logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    request_logger.addHandler(handler)
+request_logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+request_logger.propagate = False
+
+
+@app.middleware("http")
+async def protect_and_log_requests(request: Request, call_next):
+    started = time.perf_counter()
+    client = request.client.host if request.client else "unknown"
+    try:
+        require_api_token(request)
+        if request.url.path not in {"/health", "/dashboard-assets"} and not rate_limiter.allow(client):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        response = await call_next(request)
+    except HTTPException as exc:
+        from fastapi.responses import JSONResponse
+
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    request_logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "client": client,
+            }
+        )
+    )
+    return response
 
 
 SHADOW_HEALTH_SQL = text(
@@ -52,6 +91,10 @@ SHADOW_HEALTH_SQL = text(
          WHERE source = 'rentcast' AND status = 'failed'
            AND COALESCE(finished_at, started_at) >= CURRENT_TIMESTAMP - INTERVAL '7 days'
         ) AS recent_failure_count
+        ,(SELECT COUNT(*) FROM alert_outbox
+          WHERE status IN ('pending', 'processing', 'retryable_failed')) AS alert_backlog_count
+        ,(SELECT COUNT(*) FROM alert_outbox
+          WHERE status = 'permanent_failed') AS permanent_alert_failure_count
     """
 )
 
@@ -124,6 +167,10 @@ def _shadow_health(conn, now: datetime) -> dict[str, Any]:
         "next_run_at": serialize_value(next_run),
         "latest_status": summary["latest_status"],
         "recent_failure_count": int(summary["recent_failure_count"] or 0),
+        "alert_backlog_count": int(summary.get("alert_backlog_count") or 0),
+        "permanent_alert_failure_count": int(
+            summary.get("permanent_alert_failure_count") or 0
+        ),
         "recent_failures": failures,
         "freshness": freshness,
     }
@@ -170,7 +217,12 @@ def health_check():
             status_code=503,
             detail="Database is unavailable",
         ) from exc
-    status = "ok" if shadow["freshness"] == "fresh" else "degraded"
+    status = (
+        "ok"
+        if shadow["freshness"] == "fresh"
+        and shadow["permanent_alert_failure_count"] == 0
+        else "degraded"
+    )
     return {"status": status, "database": "connected", "shadow_pipeline": shadow}
 
 

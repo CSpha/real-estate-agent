@@ -394,6 +394,15 @@ host startup or power-management setting.
 
 ## Operational health and backups
 
+Before exposing the API outside the local machine, set `API_AUTH_REQUIRED=true`
+and a long random `API_AUTH_TOKEN`. Requests then require
+`Authorization: Bearer <token>`; `/health` remains available to a monitoring
+system. `API_RATE_LIMIT_PER_MINUTE` caps requests per process and client IP,
+with a default of 120. API request logs are structured JSON and omit tokens and
+query strings.
+Docker also monitors the API with a local `/health` check and restarts the
+service after repeated health-check failures.
+
 `GET /health` reports database connectivity and shadow-pipeline history: last
 successful completion, its age in seconds, expected next attempt, latest run
 status, and up to five failure timestamps from the last seven days. It reports
@@ -402,6 +411,13 @@ status, and up to five failure timestamps from the last seven days. It reports
 A successful run timestamp is a freshness proxy, not a scheduler heartbeat or
 proof that every provider record is current. The next run is unknown until
 history exists. Local Docker API access is at `http://127.0.0.1:8000/health`.
+The endpoint also reports pending/retryable alert backlog and permanent alert
+failures; permanent failures make health `degraded`.
+
+The `backup` Compose profile now includes `backup-verify`. It restores the newest
+completed dump into a disposable `*_test` database, compares schema metadata and
+row counts with the source, then removes that database. It runs weekly by default
+and retries failures hourly. Start the profile with `docker compose --profile backup up -d`.
 
 Daily backups and isolated restore verification are described in
 [Postgres backups](docs/postgres-backups.md). The first backup is immediate;

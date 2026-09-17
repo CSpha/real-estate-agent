@@ -5,6 +5,27 @@ from sqlalchemy.exc import OperationalError
 
 import app.api as api_module
 from app.api import app
+from app.api_security import rate_limiter
+
+
+def test_public_access_mode_requires_a_bearer_token(monkeypatch):
+    rate_limiter.clear()
+    monkeypatch.setenv("API_AUTH_REQUIRED", "true")
+    monkeypatch.setenv("API_AUTH_TOKEN", "test-token")
+
+    assert TestClient(app).get("/").status_code == 401
+    assert TestClient(app).get(
+        "/", headers={"Authorization": "Bearer test-token"}
+    ).status_code == 200
+
+
+def test_rate_limit_returns_429(monkeypatch):
+    rate_limiter.clear()
+    monkeypatch.setenv("API_RATE_LIMIT_PER_MINUTE", "1")
+    client = TestClient(app)
+
+    assert client.get("/").status_code == 200
+    assert client.get("/").status_code == 429
 
 
 def test_root_does_not_require_database():
