@@ -7,34 +7,26 @@ from typing import Any
 
 from dateutil.relativedelta import relativedelta
 
+from app.market.deal_score_policy import DEFAULT_POLICY, DealScorePolicy
+
 
 SCORING_VERSION = "deal-score-v2-draft-5"
 COMPARABLE_DISCOUNT_COMPONENT = "comparable_discount"
 COMPARABLE_DISCOUNT_MAX_POINTS = Decimal("40.00")
-FULL_CREDIT_DISCOUNT = Decimal("0.30")
-MINIMUM_CONFIDENCE_SCORE = Decimal("40.0")
 POINTS_QUANTUM = Decimal("0.01")
 
 LISTING_OPPORTUNITY_COMPONENT = "listing_opportunity"
 LISTING_OPPORTUNITY_MAX_POINTS = Decimal("15.00")
 CUMULATIVE_REDUCTION_MAX_POINTS = Decimal("9.00")
-FULL_CREDIT_CUMULATIVE_REDUCTION = Decimal("0.15")
 REDUCTION_FREQUENCY_MAX_POINTS = Decimal("4.00")
-FULL_CREDIT_REDUCTION_COUNT = Decimal("3")
 RECENT_REDUCTION_MAX_POINTS = Decimal("2.00")
 
 DAYS_ON_MARKET_COMPONENT = "days_on_market"
 DAYS_ON_MARKET_MAX_POINTS = Decimal("15.00")
-DAYS_ON_MARKET_ZERO_POINT_RATIO = Decimal("0.75")
-DAYS_ON_MARKET_FULL_CREDIT_RATIO = Decimal("2.00")
-MAX_LISTING_EVIDENCE_AGE_DAYS = 30
-MAX_MARKET_CONTEXT_AGE_DAYS = 180
 
 MARKET_MOMENTUM_COMPONENT = "market_momentum"
 MARKET_MOMENTUM_MAX_POINTS = Decimal("15.00")
 MARKET_MOMENTUM_NEUTRAL_POINTS = Decimal("7.50")
-MARKET_MOMENTUM_FLOOR_CHANGE = Decimal("-0.10")
-MARKET_MOMENTUM_FULL_CREDIT_CHANGE = Decimal("0.10")
 MARKET_MOMENTUM_HORIZONS = (
     {
         "key": "three_month",
@@ -53,11 +45,7 @@ MARKET_MOMENTUM_HORIZONS = (
 LIQUIDITY_INVENTORY_COMPONENT = "liquidity_inventory"
 LIQUIDITY_INVENTORY_MAX_POINTS = Decimal("10.00")
 INVENTORY_MONTHS_MAX_POINTS = Decimal("6.00")
-FULL_CREDIT_INVENTORY_MONTHS = Decimal("2.00")
-ZERO_CREDIT_INVENTORY_MONTHS = Decimal("8.00")
 SALES_FLOW_MAX_POINTS = Decimal("4.00")
-ZERO_CREDIT_SALES_TO_NEW_LISTINGS = Decimal("0.50")
-FULL_CREDIT_SALES_TO_NEW_LISTINGS = Decimal("1.00")
 
 DATA_CONFIDENCE_COMPONENT = "data_confidence"
 DATA_CONFIDENCE_MAX_POINTS = Decimal("5.00")
@@ -90,7 +78,11 @@ def _decimal(value: Any) -> Decimal | None:
 
 def calculate_comparable_discount_component(
     valuation: dict[str, Any],
+    *,
+    policy: DealScorePolicy = DEFAULT_POLICY,
 ) -> dict[str, Any]:
+    minimum_confidence = policy.decimal("minimum_confidence_score")
+    full_credit_discount = policy.decimal("full_credit_discount")
     confidence_score = _decimal(valuation.get("confidence_score"))
     discount_pct = _decimal(valuation.get("list_price_discount_pct"))
 
@@ -99,11 +91,11 @@ def calculate_comparable_discount_component(
     if valuation.get("status") != "valued":
         status = "unavailable"
         reason = "Comparable valuation is unavailable."
-    elif confidence_score is None or confidence_score < MINIMUM_CONFIDENCE_SCORE:
+    elif confidence_score is None or confidence_score < minimum_confidence:
         status = "unavailable"
         reason = (
             "Comparable valuation confidence is below the minimum "
-            f"{MINIMUM_CONFIDENCE_SCORE} threshold."
+            f"{minimum_confidence} threshold."
         )
     elif discount_pct is None:
         status = "unavailable"
@@ -112,7 +104,7 @@ def calculate_comparable_discount_component(
         qualifying_discount = max(Decimal("0"), discount_pct)
         points = min(
             COMPARABLE_DISCOUNT_MAX_POINTS,
-            qualifying_discount / FULL_CREDIT_DISCOUNT * COMPARABLE_DISCOUNT_MAX_POINTS,
+            qualifying_discount / full_credit_discount * COMPARABLE_DISCOUNT_MAX_POINTS,
         ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
         if discount_pct <= 0:
             reason = "Listing is at or above the supported comparable value."
@@ -139,8 +131,9 @@ def calculate_comparable_discount_component(
             "list_price": valuation.get("subject", {}).get("list_price"),
             "list_price_discount_pct": discount_pct,
             "confidence_score": confidence_score,
-            "minimum_confidence_score": MINIMUM_CONFIDENCE_SCORE,
-            "full_credit_discount_pct": FULL_CREDIT_DISCOUNT,
+            "minimum_confidence_score": minimum_confidence,
+            "full_credit_discount_pct": full_credit_discount,
+            "policy_version": policy.version,
         },
     }
 
@@ -175,7 +168,12 @@ def calculate_listing_opportunity_component(
     price_history: list[dict[str, Any]],
     *,
     as_of_date: date,
+    policy: DealScorePolicy = DEFAULT_POLICY,
 ) -> dict[str, Any]:
+    full_reduction = policy.decimal("full_credit_cumulative_reduction")
+    full_count = policy.decimal("full_credit_reduction_count")
+    recent_days = policy.integer("recent_reduction_full_credit_days")
+    partial_recent_days = policy.integer("recent_reduction_partial_credit_days")
     observations = _price_observations(price_history, as_of_date)
     if not observations:
         return {
@@ -216,13 +214,13 @@ def calculate_listing_opportunity_component(
     cumulative_points = min(
         CUMULATIVE_REDUCTION_MAX_POINTS,
         cumulative_reduction_pct
-        / FULL_CREDIT_CUMULATIVE_REDUCTION
+        / full_reduction
         * CUMULATIVE_REDUCTION_MAX_POINTS,
     ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
     frequency_points = min(
         REDUCTION_FREQUENCY_MAX_POINTS,
         Decimal(len(reductions))
-        / FULL_CREDIT_REDUCTION_COUNT
+        / full_count
         * REDUCTION_FREQUENCY_MAX_POINTS,
     ).quantize(POINTS_QUANTUM, rounding=ROUND_HALF_UP)
 
@@ -232,9 +230,9 @@ def calculate_listing_opportunity_component(
         latest_reduction_at = reductions[-1]["effective_at"]
         latest_reduction_date = utc_date(latest_reduction_at)
         days_since_latest_reduction = (as_of_date - latest_reduction_date).days
-        if days_since_latest_reduction <= 30:
+        if days_since_latest_reduction <= recent_days:
             recency_points = RECENT_REDUCTION_MAX_POINTS
-        elif days_since_latest_reduction <= 90:
+        elif days_since_latest_reduction <= partial_recent_days:
             recency_points = Decimal("1.00")
 
     points = cumulative_points + frequency_points + recency_points
@@ -270,11 +268,12 @@ def calculate_listing_opportunity_component(
             },
             "thresholds": {
                 "full_credit_cumulative_reduction_pct": (
-                    FULL_CREDIT_CUMULATIVE_REDUCTION
+                    full_reduction
                 ),
-                "full_credit_reduction_count": FULL_CREDIT_REDUCTION_COUNT,
-                "recent_reduction_full_credit_days": 30,
-                "recent_reduction_partial_credit_days": 90,
+                "full_credit_reduction_count": full_count,
+                "recent_reduction_full_credit_days": recent_days,
+                "recent_reduction_partial_credit_days": partial_recent_days,
+                "policy_version": policy.version,
             },
         },
     }
@@ -288,7 +287,12 @@ def calculate_days_on_market_component(
     county_name: str | None,
     market_period_date: date | None,
     as_of_date: date,
+    policy: DealScorePolicy = DEFAULT_POLICY,
 ) -> dict[str, Any]:
+    zero_ratio = policy.decimal("days_on_market_zero_point_ratio")
+    full_ratio = policy.decimal("days_on_market_full_credit_ratio")
+    max_listing_age = policy.integer("max_listing_evidence_age_days")
+    max_market_age = policy.integer("max_market_context_age_days")
     subject_days = _decimal(subject_days_on_market)
     county_median = _decimal(county_median_days_on_market)
     listing_evidence_age = (
@@ -311,10 +315,11 @@ def calculate_days_on_market_component(
         "market_period_date": market_period_date,
         "market_context_age_days": market_context_age,
         "thresholds": {
-            "zero_point_ratio": DAYS_ON_MARKET_ZERO_POINT_RATIO,
-            "full_credit_ratio": DAYS_ON_MARKET_FULL_CREDIT_RATIO,
-            "max_listing_evidence_age_days": MAX_LISTING_EVIDENCE_AGE_DAYS,
-            "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
+            "zero_point_ratio": zero_ratio,
+            "full_credit_ratio": full_ratio,
+            "max_listing_evidence_age_days": max_listing_age,
+            "max_market_context_age_days": max_market_age,
+            "policy_version": policy.version,
         },
     }
 
@@ -323,14 +328,14 @@ def calculate_days_on_market_component(
         unavailable_reason = "Valid listing days-on-market history is unavailable."
     elif (
         listing_evidence_age is None
-        or not 0 <= listing_evidence_age <= MAX_LISTING_EVIDENCE_AGE_DAYS
+        or not 0 <= listing_evidence_age <= max_listing_age
     ):
         unavailable_reason = "Listing days-on-market evidence is missing or stale."
     elif county_median is None or county_median <= 0:
         unavailable_reason = "A valid county median days on market is unavailable."
     elif (
         market_context_age is None
-        or not 0 <= market_context_age <= MAX_MARKET_CONTEXT_AGE_DAYS
+        or not 0 <= market_context_age <= max_market_age
     ):
         unavailable_reason = "County days-on-market context is missing or stale."
 
@@ -348,9 +353,9 @@ def calculate_days_on_market_component(
     days_on_market_ratio = subject_days / county_median
     qualifying_ratio = max(
         Decimal("0"),
-        days_on_market_ratio - DAYS_ON_MARKET_ZERO_POINT_RATIO,
+        days_on_market_ratio - zero_ratio,
     )
-    scoring_range = DAYS_ON_MARKET_FULL_CREDIT_RATIO - DAYS_ON_MARKET_ZERO_POINT_RATIO
+    scoring_range = full_ratio - zero_ratio
     points = min(
         DAYS_ON_MARKET_MAX_POINTS,
         qualifying_ratio / scoring_range * DAYS_ON_MARKET_MAX_POINTS,
@@ -405,14 +410,16 @@ def _market_price_observations(
     return observations
 
 
-def _momentum_horizon_points(change: Decimal) -> Decimal:
+def _momentum_horizon_points(change: Decimal, policy: DealScorePolicy) -> Decimal:
+    floor_change = policy.decimal("market_momentum_floor_change")
+    full_credit_change = policy.decimal("market_momentum_full_credit_change")
     qualifying_change = min(
-        MARKET_MOMENTUM_FULL_CREDIT_CHANGE,
-        max(MARKET_MOMENTUM_FLOOR_CHANGE, change),
+        full_credit_change,
+        max(floor_change, change),
     )
-    scoring_range = MARKET_MOMENTUM_FULL_CREDIT_CHANGE - MARKET_MOMENTUM_FLOOR_CHANGE
+    scoring_range = full_credit_change - floor_change
     return (
-        (qualifying_change - MARKET_MOMENTUM_FLOOR_CHANGE)
+        (qualifying_change - floor_change)
         / scoring_range
         * MARKET_MOMENTUM_MAX_POINTS
     )
@@ -422,7 +429,9 @@ def calculate_market_momentum_component(
     market_history: list[dict[str, Any]],
     *,
     as_of_date: date,
+    policy: DealScorePolicy = DEFAULT_POLICY,
 ) -> dict[str, Any]:
+    max_market_age = policy.integer("max_market_context_age_days")
     observations = _market_price_observations(market_history, as_of_date)
     latest = observations[-1] if observations else None
     latest_age_days = (as_of_date - latest["period_date"]).days if latest else None
@@ -434,17 +443,18 @@ def calculate_market_momentum_component(
         "price_observations": observations,
         "horizons": {},
         "thresholds": {
-            "floor_change_pct": MARKET_MOMENTUM_FLOOR_CHANGE,
-            "full_credit_change_pct": MARKET_MOMENTUM_FULL_CREDIT_CHANGE,
+            "floor_change_pct": policy.decimal("market_momentum_floor_change"),
+            "full_credit_change_pct": policy.decimal("market_momentum_full_credit_change"),
             "neutral_points": MARKET_MOMENTUM_NEUTRAL_POINTS,
-            "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
+            "max_market_context_age_days": max_market_age,
+            "policy_version": policy.version,
         },
     }
 
     if latest is None:
         unavailable_reason = "No valid county median sale-price history is available."
     elif latest_age_days is None or not (
-        0 <= latest_age_days <= MAX_MARKET_CONTEXT_AGE_DAYS
+        0 <= latest_age_days <= max_market_age
     ):
         unavailable_reason = "County sale-price history is missing or stale."
     else:
@@ -486,7 +496,7 @@ def calculate_market_momentum_component(
             change = latest["median_sale_price"] / reference[
                 "median_sale_price"
             ] - Decimal("1")
-            horizon_points = _momentum_horizon_points(change)
+            horizon_points = _momentum_horizon_points(change, policy)
             horizon["change_pct"] = change
             horizon["points_before_weight"] = horizon_points.quantize(
                 POINTS_QUANTUM,
@@ -547,7 +557,13 @@ def calculate_liquidity_inventory_component(
     county_name: str | None,
     market_period_date: date | None,
     as_of_date: date,
+    policy: DealScorePolicy = DEFAULT_POLICY,
 ) -> dict[str, Any]:
+    full_inventory = policy.decimal("full_credit_inventory_months")
+    zero_inventory = policy.decimal("zero_credit_inventory_months")
+    zero_sales_flow = policy.decimal("zero_credit_sales_to_new_listings")
+    full_sales_flow = policy.decimal("full_credit_sales_to_new_listings")
+    max_market_age = policy.integer("max_market_context_age_days")
     sold = _decimal(homes_sold)
     active = _decimal(active_listings)
     new = _decimal(new_listings)
@@ -565,11 +581,12 @@ def calculate_liquidity_inventory_component(
         "active_listings": active,
         "new_listings": new,
         "thresholds": {
-            "full_credit_inventory_months": FULL_CREDIT_INVENTORY_MONTHS,
-            "zero_credit_inventory_months": ZERO_CREDIT_INVENTORY_MONTHS,
-            "zero_credit_sales_to_new_listings": (ZERO_CREDIT_SALES_TO_NEW_LISTINGS),
-            "full_credit_sales_to_new_listings": (FULL_CREDIT_SALES_TO_NEW_LISTINGS),
-            "max_market_context_age_days": MAX_MARKET_CONTEXT_AGE_DAYS,
+            "full_credit_inventory_months": full_inventory,
+            "zero_credit_inventory_months": zero_inventory,
+            "zero_credit_sales_to_new_listings": zero_sales_flow,
+            "full_credit_sales_to_new_listings": full_sales_flow,
+            "max_market_context_age_days": max_market_age,
+            "policy_version": policy.version,
         },
     }
 
@@ -578,7 +595,7 @@ def calculate_liquidity_inventory_component(
         unavailable_reason = "A positive county homes-sold count is unavailable."
     elif (
         market_context_age is None
-        or not 0 <= market_context_age <= MAX_MARKET_CONTEXT_AGE_DAYS
+        or not 0 <= market_context_age <= max_market_age
     ):
         unavailable_reason = (
             "County liquidity and inventory context is missing or stale."
@@ -602,12 +619,12 @@ def calculate_liquidity_inventory_component(
     if active is not None and active >= 0:
         inventory_months = active / sold
         qualifying_inventory = min(
-            ZERO_CREDIT_INVENTORY_MONTHS,
-            max(FULL_CREDIT_INVENTORY_MONTHS, inventory_months),
+            zero_inventory,
+            max(full_inventory, inventory_months),
         )
         inventory_points = (
-            (ZERO_CREDIT_INVENTORY_MONTHS - qualifying_inventory)
-            / (ZERO_CREDIT_INVENTORY_MONTHS - FULL_CREDIT_INVENTORY_MONTHS)
+            (zero_inventory - qualifying_inventory)
+            / (zero_inventory - full_inventory)
             * INVENTORY_MONTHS_MAX_POINTS
         )
 
@@ -616,12 +633,12 @@ def calculate_liquidity_inventory_component(
     if new is not None and new > 0:
         sales_to_new_listings = sold / new
         qualifying_sales_flow = min(
-            FULL_CREDIT_SALES_TO_NEW_LISTINGS,
-            max(ZERO_CREDIT_SALES_TO_NEW_LISTINGS, sales_to_new_listings),
+            full_sales_flow,
+            max(zero_sales_flow, sales_to_new_listings),
         )
         sales_flow_points = (
-            (qualifying_sales_flow - ZERO_CREDIT_SALES_TO_NEW_LISTINGS)
-            / (FULL_CREDIT_SALES_TO_NEW_LISTINGS - ZERO_CREDIT_SALES_TO_NEW_LISTINGS)
+            (qualifying_sales_flow - zero_sales_flow)
+            / (full_sales_flow - zero_sales_flow)
             * SALES_FLOW_MAX_POINTS
         )
 

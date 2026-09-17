@@ -13,6 +13,7 @@ from app.market.deal_score_v2 import (
     calculate_listing_opportunity_component,
     calculate_market_momentum_component,
 )
+from app.market.deal_score_policy import DEFAULT_THRESHOLDS, DealScorePolicy
 
 
 def _valuation(
@@ -68,6 +69,20 @@ def test_comparable_discount_component_preserves_unavailable_state(valuation):
 
     assert component["status"] == "unavailable"
     assert component["points"] is None
+
+
+def test_comparable_discount_uses_a_versioned_policy_threshold():
+    policy = DealScorePolicy(
+        "deal-score-thresholds-test",
+        {**DEFAULT_THRESHOLDS, "full_credit_discount": "0.15"},
+    )
+
+    component = calculate_comparable_discount_component(
+        _valuation(Decimal("0.15")), policy=policy
+    )
+
+    assert component["points"] == Decimal("40.00")
+    assert component["inputs"]["policy_version"] == "deal-score-thresholds-test"
 
 
 def _history(*prices_and_dates):

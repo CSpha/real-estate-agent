@@ -374,6 +374,16 @@ component. The Deal Score v2 calculation and persistence model is used by the
 dedicated shadow pipeline and review report. It is still isolated from
 saved-search and alert logic; promotion remains a separate, gated decision.
 
+### Deal Score threshold policies
+
+`deal_score_policies` holds versioned threshold sets. The initial active policy,
+`deal-score-thresholds-v1`, preserves the thresholds documented above. Each
+component records its policy version and thresholds in its immutable calculation
+JSON, so a future policy produces new component and aggregate fingerprints while
+leaving earlier results reproducible. There can be only one active policy.
+Create and review a new policy row before switching it active; after a change,
+run the valuation backfill to publish scores calculated under that policy.
+
 ## Database availability
 
 Postgres uses `restart: unless-stopped`, also applied to the existing container
