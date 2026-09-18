@@ -408,6 +408,10 @@ with a default of 120. API request logs are structured JSON and omit tokens and
 query strings.
 Docker also monitors the API with a local `/health` check and restarts the
 service after repeated health-check failures.
+The shadow-runner has its own deadline check: if its latest run passes the
+scheduled interval (or failure-retry interval) by 15 minutes, Docker marks it
+unhealthy and restarts it. This prevents a paused host from leaving a stale
+long sleep in place after resume.
 
 `GET /health` reports database connectivity and shadow-pipeline history: last
 successful completion, its age in seconds, expected next attempt, latest run

@@ -96,6 +96,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.shadow.health"]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 30s
     restart: unless-stopped
 
   backup-verify:
