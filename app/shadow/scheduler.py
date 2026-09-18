@@ -4,6 +4,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy import text
 
@@ -87,6 +88,21 @@ def next_run_at(
     return deadline
 
 
+def sleep_until(
+    deadline: datetime,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    sleep: Callable[[float], None] = time.sleep,
+    maximum_sleep_seconds: int = 60,
+) -> None:
+    """Recheck wall time frequently so host suspend cannot leave a stale sleep."""
+    while True:
+        remaining = (deadline - now()).total_seconds()
+        if remaining <= 0:
+            return
+        sleep(min(remaining, maximum_sleep_seconds))
+
+
 def main() -> None:
     interval_seconds = _positive_hours("SHADOW_INTERVAL_HOURS", 72) * 3600
     retry_seconds = _positive_hours("SHADOW_RETRY_HOURS", 6) * 3600
@@ -106,7 +122,7 @@ def main() -> None:
             time.sleep(60)
             continue
         print(f"Next shadow attempt due at {deadline.isoformat()}", flush=True)
-        time.sleep(max(0, (deadline - datetime.now(timezone.utc)).total_seconds()))
+        sleep_until(deadline)
         print(f"Starting shadow run at {datetime.now(timezone.utc).isoformat()}")
         try:
             result = run_scheduled_shadow_pipeline()

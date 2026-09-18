@@ -45,6 +45,28 @@ def test_interval_change_uses_last_completion(tmp_path):
     )
 
 
+def test_sleep_until_rechecks_wall_time_after_short_intervals():
+    start = datetime(2026, 9, 18, tzinfo=timezone.utc)
+    clock = iter(
+        [
+            start,
+            start + timedelta(seconds=60),
+            start + timedelta(seconds=120),
+            start + timedelta(seconds=125),
+        ]
+    )
+    sleep = MagicMock()
+
+    scheduler.sleep_until(
+        start + timedelta(seconds=125),
+        now=lambda: next(clock),
+        sleep=sleep,
+        maximum_sleep_seconds=60,
+    )
+
+    assert [call.args[0] for call in sleep.call_args_list] == [60, 60, 5]
+
+
 def test_scheduled_run_disables_rentcast_calls_by_default(monkeypatch):
     monkeypatch.delenv("SHADOW_ENABLE_RENTCAST_API_CALLS", raising=False)
     run_pipeline = MagicMock(return_value={"status": "succeeded"})
