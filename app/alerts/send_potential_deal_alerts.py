@@ -1,9 +1,8 @@
 import json
+from decimal import Decimal
 
-import requests
 from sqlalchemy import Engine, text
 
-from app.config import get_settings, require_setting
 from app.db import get_engine
 
 
@@ -33,8 +32,14 @@ def get_potential_deal_events(engine: Engine | None = None):
            AND a.source = pd.source
            AND a.source_listing_id = pd.source_listing_id
            AND a.event_timestamp = pd.scored_at
+        LEFT JOIN alert_outbox outbox
+            ON outbox.alert_type = 'potential_deal'
+           AND outbox.source = pd.source
+           AND outbox.source_listing_id = pd.source_listing_id
+           AND outbox.event_timestamp = pd.scored_at
         WHERE listing.alert_eligible
           AND a.id IS NULL
+          AND outbox.id IS NULL
         ORDER BY pd.market_score DESC, pd.pct_below_or_above_median ASC;
         """
     )
@@ -45,7 +50,13 @@ def get_potential_deal_events(engine: Engine | None = None):
         return conn.execute(query).mappings().all()
 
 
+def _decimal(value):
+    # Outbox payloads store numbers as strings; direct events use Decimal.
+    return None if value is None or value == "None" else Decimal(str(value))
+
+
 def format_currency(value):
+    value = _decimal(value)
     if value is None:
         return "N/A"
 
@@ -53,6 +64,7 @@ def format_currency(value):
 
 
 def format_percent(value):
+    value = _decimal(value)
     if value is None:
         return "N/A"
 
@@ -76,15 +88,19 @@ def format_slack_message(event):
     }
 
 
-def send_to_slack(webhook_url: str, message_payload: dict):
-    response = requests.post(webhook_url, json=message_payload, timeout=30)
-    response.raise_for_status()
+def _optional_str(value):
+    return None if value is None else str(value)
 
 
-def record_alert(event, engine: Engine | None = None) -> bool:
+def enqueue_potential_deal_events(engine: Engine | None = None) -> int:
+    engine = engine or get_engine()
+    events = get_potential_deal_events(engine)
+    if not events:
+        return 0
+
     insert_sql = text(
         """
-        INSERT INTO alerts_sent (
+        INSERT INTO alert_outbox (
             alert_type,
             source,
             source_listing_id,
@@ -92,7 +108,7 @@ def record_alert(event, engine: Engine | None = None) -> bool:
             payload_json
         )
         VALUES (
-            :alert_type,
+            'potential_deal',
             :source,
             :source_listing_id,
             :event_timestamp,
@@ -107,61 +123,46 @@ def record_alert(event, engine: Engine | None = None) -> bool:
         DO NOTHING
         """
     )
-
-    payload_json = json.dumps(
+    values = [
         {
-            "address": event["address"],
-            "city": event["city"],
-            "state": event["state"],
-            "county_name": event["county_name"],
-            "list_price": str(event["list_price"]),
-            "county_median_sale_price": str(event["county_median_sale_price"]),
-            "price_vs_county_median": str(event["price_vs_county_median"]),
-            "pct_below_or_above_median": str(event["pct_below_or_above_median"]),
-            "market_score": event["market_score"],
-            "score_reason": event["score_reason"],
+            "source": event["source"],
+            "source_listing_id": event["source_listing_id"],
+            "event_timestamp": event["event_timestamp"],
+            "payload_json": json.dumps(
+                {
+                    "source": event["source"],
+                    "source_listing_id": event["source_listing_id"],
+                    "address": event["address"],
+                    "city": event["city"],
+                    "state": event["state"],
+                    "county_name": event["county_name"],
+                    "list_price": _optional_str(event["list_price"]),
+                    "county_median_sale_price": _optional_str(
+                        event["county_median_sale_price"]
+                    ),
+                    "price_vs_county_median": _optional_str(
+                        event["price_vs_county_median"]
+                    ),
+                    "pct_below_or_above_median": _optional_str(
+                        event["pct_below_or_above_median"]
+                    ),
+                    "market_score": _optional_str(event["market_score"]),
+                    "score_reason": event["score_reason"],
+                    "event_timestamp": event["event_timestamp"].isoformat(),
+                }
+            ),
         }
-    )
-
-    engine = engine or get_engine()
-
+        for event in events
+    ]
     with engine.begin() as conn:
-        result = conn.execute(
-            insert_sql,
-            {
-                "alert_type": "potential_deal",
-                "source": event["source"],
-                "source_listing_id": event["source_listing_id"],
-                "event_timestamp": event["event_timestamp"],
-                "payload_json": payload_json,
-            },
-        )
-    return result.rowcount == 1
+        result = conn.execute(insert_sql, values)
+    return max(result.rowcount, 0)
 
 
 def main():
-    webhook_url = require_setting(
-        get_settings().slack_webhook_url,
-        "SLACK_WEBHOOK_URL",
-    )
-
-    events = get_potential_deal_events()
-
-    if not events:
-        print("No new potential deal alerts to send.")
-        return
-
-    for event in events:
-        message_payload = format_slack_message(event)
-        send_to_slack(webhook_url, message_payload)
-        record_alert(event)
-
-        print(
-            f"Sent potential deal alert for listing {event['source_listing_id']} "
-            f"at event time {event['event_timestamp']}"
-        )
-
-    print(f"Finished sending {len(events)} potential deal alert(s).")
+    queued = enqueue_potential_deal_events()
+    print(f"Queued {queued} new potential deal alert(s).")
+    print("Run python -m app.alerts.process_alert_outbox to deliver queued alerts.")
 
 
 if __name__ == "__main__":

@@ -24,6 +24,12 @@ from app.alerts.send_price_drop_alerts import (
     record_alert,
 )
 from app.alerts.outbox import deliver_pending_alerts
+from app.alerts.process_alert_outbox import FORMATTERS
+from app.alerts.send_potential_deal_alerts import (
+    enqueue_potential_deal_events,
+    get_potential_deal_events,
+)
+from app.alerts.slack import SlackDeliveryError
 from app.ingest.load_comparable_sales import load_comparable_sales
 from app.ingest.load_redfin_county_sales import (
     REDFIN_SOURCE_FILE,
@@ -1550,3 +1556,101 @@ def test_saved_search_versioning_and_evaluation_are_idempotent(postgres_engine):
             {"saved_search_id": search.id},
         )
     assert remaining == 0
+
+
+def test_potential_deal_outbox_queues_and_delivers_once(postgres_engine):
+    score_listings_against_market(postgres_engine)
+    expected = len(get_potential_deal_events(postgres_engine))
+    assert expected > 0
+
+    assert enqueue_potential_deal_events(postgres_engine) == expected
+    assert enqueue_potential_deal_events(postgres_engine) == 0
+
+    sent = []
+    deliver_pending_alerts(
+        "https://example.invalid/test-webhook",
+        FORMATTERS,
+        send=lambda _url, payload: sent.append(payload),
+        engine=postgres_engine,
+        min_send_interval_seconds=0,
+    )
+
+    potential = [p for p in sent if p["text"].startswith("Potential deal")]
+    assert len(potential) == expected
+    assert get_potential_deal_events(postgres_engine) == []
+    assert enqueue_potential_deal_events(postgres_engine) == 0
+
+    with postgres_engine.connect() as conn:
+        statuses = conn.execute(
+            text(
+                """
+                SELECT status, COUNT(*)
+                FROM alert_outbox
+                WHERE alert_type = 'potential_deal'
+                GROUP BY status
+                """
+            )
+        ).all()
+    assert statuses == [("sent", expected)]
+
+
+def test_rate_limited_alert_waits_for_retry_after(postgres_engine):
+    with postgres_engine.begin() as conn:
+        outbox_id = conn.scalar(
+            text(
+                """
+                INSERT INTO alert_outbox (
+                    alert_type, source, source_listing_id, event_timestamp, payload_json
+                )
+                VALUES (
+                    'price_drop', 'sample_feed', 'rate-limit-test',
+                    TIMESTAMPTZ '2026-07-20 00:00:00+00',
+                    CAST(:payload_json AS JSONB)
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "payload_json": json.dumps(
+                    {
+                        "address": "3 Throttle St",
+                        "city": "Wooster",
+                        "state": "OH",
+                        "previous_price": "100000",
+                        "current_price": "95000",
+                        "price_change": "-5000",
+                        "price_change_pct": "-5",
+                        "source_listing_id": "rate-limit-test",
+                    }
+                )
+            },
+        )
+
+    def rate_limited_send(_url, _payload):
+        raise SlackDeliveryError(
+            "Slack returned HTTP 429", retryable=True, rate_limited=True,
+            retry_after_seconds=600,
+        )
+
+    counts = deliver_pending_alerts(
+        "https://example.invalid/test-webhook",
+        FORMATTERS,
+        send=rate_limited_send,
+        engine=postgres_engine,
+    )
+    assert counts == {"sent": 0, "failed": 1}
+
+    with postgres_engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT status,
+                       EXTRACT(EPOCH FROM available_at - CURRENT_TIMESTAMP) AS wait
+                FROM alert_outbox
+                WHERE id = :outbox_id
+                """
+            ),
+            {"outbox_id": outbox_id},
+        ).one()
+    assert row.status == "retryable_failed"
+    assert row.wait >= 590

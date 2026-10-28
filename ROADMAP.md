@@ -66,7 +66,10 @@ Searches, alerts, and API
 - Versioned saved searches with validated, explainable criteria evaluation
 - Stable listing/search event fingerprints and persisted match transitions
 - PostgreSQL alert outbox with atomic claims, retries, and visible permanent failures
-- Slack alerts for price drops and potential deals (sample pipeline only)
+- Slack alerts for price drops and potential deals, both delivered through the
+  outbox with pacing, jittered backoff, `Retry-After` handling, and failure
+  classification (sample pipeline only)
+- `--dry-run` and `--test-channel` worker modes that leave the outbox unchanged
 - FastAPI API and a local shadow-review dashboard (`/dashboard`)
 - Opt-in bearer-token auth (`API_AUTH_REQUIRED`), per-client rate limiting,
   and structured JSON request logs that omit tokens and query strings
@@ -80,7 +83,9 @@ Operations
 - Shadow scheduler recovers deadlines from run history across restarts and host
   sleep; scheduled RentCast calls are off unless
   `SHADOW_ENABLE_RENTCAST_API_CALLS=true`
-- CI on every push: Ruff, unit tests, and Compose config validation
+- CI on every push: Ruff, unit tests, Compose config validation, an Alembic
+  upgrade/downgrade/upgrade round trip and the integration suite against a
+  Postgres 16 service, and a gitleaks scan of the full history
 - Unit tests plus opt-in isolated PostgreSQL integration tests
 
 ## Known issues found in this review
@@ -129,7 +134,9 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
       licensed feed (see [Wayne County valid sales](docs/wayne-county-valid-sales.md);
       the request to the auditor has been drafted but not sent)
 - [ ] Evidence obtained for the 21 flagged listings; none has been cleared
-- [ ] Slack notification hardening and test-channel validation (Phase 4)
+- [x] Slack delivery hardening (Phase 4): pacing, `Retry-After`, jitter,
+      failure classification, potential deals through the outbox
+- [ ] Test-channel validation of real messages with `SLACK_TEST_WEBHOOK_URL`
 - [ ] Separate, explicit approval for production alert activation
 
 ## Near-term priorities
@@ -147,12 +154,12 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 5. Decide whether to add a Fredericksburg abbreviation mapping to the auditor
    parser. Keep multi-value property records quarantined until a deterministic
    parcel/dwelling rule is documented.
-6. Finish Phase 4 Slack hardening before any alert activation.
-7. Extend CI with an Alembic upgrade/downgrade check against Postgres, the
-   integration suite, and secret scanning.
-8. Move the generic provider sync to Alembic-managed state with multi-page
+6. Create a Slack test channel webhook, set `SLACK_TEST_WEBHOOK_URL`, and
+   validate real messages with `process_alert_outbox --test-channel`. Then
+   decide on Block Kit formatting and digest delivery (Phase 4).
+7. Move the generic provider sync to Alembic-managed state with multi-page
    resumable cursors (known issue 4).
-9. Add geographic bounding-box criteria once provider coordinates are available.
+8. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
 
@@ -252,16 +259,21 @@ unless their terms and an explicit agreement authorize it.
 - [x] Exponential backoff for temporary failures (429 and 5xx are retryable)
 - [x] Separate detection/queueing from the delivery worker command
 - [x] Permanent failures visible in `/health`
-- [ ] Add jitter to retry delays
-- [ ] Honor Slack HTTP 429 `Retry-After` responses
-- [ ] Pace incoming-webhook messages at no more than about one per second
-- [ ] Route malformed payloads and invalid/revoked webhooks to permanent failure
-- [ ] Route potential-deal alerts through the outbox
+- [x] Equal jitter on retry delays (30 seconds to one hour)
+- [x] Honor Slack HTTP 429 `Retry-After`; stop the run and never exhaust
+      attempts on rate limits
+- [x] Pace incoming-webhook messages at no more than about one per second
+- [x] Malformed or oversized payloads fail permanently without sending;
+      revoked, missing, or archived webhooks fail the current alert and stop
+      the run so remaining alerts are not burned
+- [x] Route potential-deal alerts through the outbox (queued only by their
+      explicit command, not by `app.run_pipeline`)
+- [x] Dry-run and test-channel worker modes that leave the outbox unchanged
+- [ ] Validate real messages in a Slack test channel
 - [ ] Slack Block Kit formatting: address and listing URL, permitted primary
       photo, current and previous price, match reasons, key attributes, and
       data source/attribution
 - [ ] Digest delivery to avoid flooding a channel
-- [ ] Dry-run/test-channel mode
 
 ### Acceptance criteria
 
@@ -295,7 +307,7 @@ unless their terms and an explicit agreement authorize it.
 - [ ] Off-machine backup copies and a retention policy
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
 - [ ] Validate and limit API pagination and expensive queries
-- [ ] CI for migrations, integration tests, and secret scanning
+- [x] CI for migration round trips, integration tests, and secret scanning
 - [ ] Document deployment, credential rotation, and incident response
 
 ### Acceptance criteria
@@ -453,15 +465,15 @@ Primary Mortgage Market Survey is the authoritative rate source.
 Covered today: normalization with provider fixtures, criteria boundaries,
 price-change and fingerprint logic, alert idempotency, repeated-ingestion
 integration, bounded single-page provider fetches, scheduler deadlines, health,
-backups, and dry-run alert suppression.
+backups, dry-run alert suppression, Slack 200/429/5xx/4xx classification,
+pacing and stop conditions, migration round trips against fresh PostgreSQL in
+CI, and the integration suite in CI.
 
 Still needed:
 
 - Multi-page provider pagination and interrupted-sync resume tests
 - Status-enumeration tests for the full listing lifecycle
-- Migration tests against fresh PostgreSQL in CI
 - Provider throttling and retry tests
-- Slack 200, 429 with `Retry-After`, temporary 5xx, and permanent 4xx tests
 - End-to-end dry-run test of the shadow pipeline
 
 ## History
@@ -492,6 +504,10 @@ Still needed:
   succeeded (119 listings, 99 comparable-ready, 97 valued, 0 alert-eligible)
   using September 16 listing data. Enabled budgeted scheduled RentCast
   refreshes and added the listing-sync readiness check; 191 unit tests passed.
+  CI fixed (Compose check had no credentials) and PR #2 merged. Slack delivery
+  hardened and potential deals moved to the outbox; CI gained migration round
+  trips, the integration suite, and gitleaks. 214 unit and 25 integration
+  tests passed; the full history has no gitleaks findings.
 
 ## External references
 

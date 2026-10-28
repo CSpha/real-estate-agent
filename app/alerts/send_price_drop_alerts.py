@@ -1,6 +1,5 @@
 import json
 
-import requests
 from sqlalchemy import Engine, text
 
 from app.db import get_engine
@@ -105,11 +104,6 @@ def format_slack_message(event):
             f"Listing ID: {event['source_listing_id']}"
         )
     }
-
-
-def send_to_slack(webhook_url: str, message_payload: dict):
-    response = requests.post(webhook_url, json=message_payload, timeout=30)
-    response.raise_for_status()
 
 
 def enqueue_price_drop_events(engine: Engine | None = None) -> int:
