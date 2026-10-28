@@ -21,5 +21,8 @@ jobs:
       # Compose requires these secrets; placeholders let CI validate the file.
       - run: docker compose --profile shadow --profile backup config --quiet
         env:
+          # Some Compose versions evaluate the nested POSTGRES_PASSWORD
+          # fallback even when DB_PASSWORD is set, so provide both.
           DB_PASSWORD: ci-placeholder
+          POSTGRES_PASSWORD: ci-placeholder
           RENTCAST_API_KEY: ci-placeholder
