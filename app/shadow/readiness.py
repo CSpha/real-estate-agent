@@ -33,6 +33,9 @@ READINESS_SQL = text(
         (SELECT COUNT(*) FROM recent_dates) AS distinct_run_dates,
         (SELECT MIN(started_at::date) FROM successful) AS first_success_date,
         (SELECT MAX(started_at::date) FROM recent_dates) AS last_success_date,
+        (
+            SELECT COUNT(*) FROM recent_dates WHERE details_json ? 'rentcast'
+        ) AS recent_dates_with_listing_sync,
         COALESCE(
             (SELECT MAX(alert_eligible_count) FROM successful), 0
         ) AS max_alert_eligible_count,
@@ -79,6 +82,11 @@ def assess_shadow_readiness(
         "no_shadow_listing_alert_eligible": int(row["max_alert_eligible_count"] or 0)
         == 0,
         "supported_valuation_coverage_at_least_70pct": coverage >= 0.70,
+        # Re-scoring stale listings is not a new observation of the market.
+        "recent_run_dates_synced_listings": int(
+            row["recent_dates_with_listing_sync"] or 0
+        )
+        >= 3,
     }
     blockers = tuple(name for name, passed in checks.items() if not passed)
     return ShadowReadiness(

@@ -1,82 +1,158 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: September 8, 2026
+Last reviewed: October 28, 2026 (code through commit `23f0f10`, September 18)
 
 ## Goal
 
 Build a reliable application that retrieves authorized real-estate listings, stores current and historical listing data, evaluates configurable search criteria, scores opportunities with transparent market context, and sends deduplicated Slack notifications when meaningful events occur.
 
-## Current state
+## Status at a glance
 
-The repository has moved beyond the original Phase 1/Phase 2 milestone notes and now includes:
+| Area | Status |
+| --- | --- |
+| Alert pipeline (`app.run_pipeline`) | Working end to end, but still loads only `data/sample_listings.csv` |
+| Shadow pipeline (`app.shadow.run_pipeline`) | Runs real Wayne County data; alert-isolated; three-day Docker scheduler |
+| Deal Score v2 | All six components and the 100-point aggregate implemented; thresholds versioned in `deal_score_policies` |
+| Rental underwriting | RentCast rent AVM, cash flow, cap rate, DSCR sizing, fixed-rate growth scenarios |
+| Mortgage-rate outlook | Multi-signal model and backtesting implemented; calibration rejected, not deployed |
+| Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI |
+| Alert promotion | **Blocked**: readiness passes, but listing freshness, transaction validity, and flagged-listing evidence are outstanding |
 
-- One authoritative Alembic-managed PostgreSQL schema
-- Immutable raw JSON payloads and normalized current listings
-- An auditable, idempotent property-level comparable-sales schema and CSV importer
-- Versioned deterministic comparable selection with visible fallback tiers
-- Explainable comparable valuation using weighted-median price-per-square-foot logic, outlier safeguards, value ranges, and confidence components
-- Immutable valuation snapshots and a versioned 40-point comparable-discount
-  component for the in-progress Deal Score v2
-- A versioned 15-point listing-opportunity component using cumulative price
-  reductions, reduction frequency, and recency without future-data leakage
-- A versioned 15-point days-on-market component using fresh point-in-time
-  listing history and county median context
-- A versioned 15-point market-momentum component blending point-in-time county
-  median sale-price changes over 3 and 12 months
-- A versioned 10-point liquidity-and-inventory component using county sales
-  velocity, active inventory, and new-listing flow
-- A versioned 5-point data-confidence component and an immutable 100-point
-  aggregate that distinguishes complete, partial, and unavailable results
+Latest schema revision: `0019_deal_score_policies`.
+
+## Current capabilities
+
+Data and ingestion
+
+- One authoritative Alembic-managed PostgreSQL schema (19 revisions)
+- Immutable raw JSON payloads with content hashes and normalized current listings
 - Idempotent sample ingestion and change-aware listing history
-- One authoritative county-level market scoring implementation
-- Mortgage-rate outlook and backtest analysis modules with signal-based scoring
-- Slack alerts for price drops and potential deals
-- A FastAPI API with database-aware health checking
-- Docker Compose services for PostgreSQL and the API, including readiness checks
-- Unit tests and opt-in isolated PostgreSQL integration tests
-- Setup, migration, pipeline, API, testing, and rollback documentation
+- RentCast active-sale-listing adapter with bounded pagination, secret-header
+  authentication, and a read-only coverage audit
+- Wayne County RentCast shadow sync with persistent alert isolation, explicit
+  single-family/condo/townhouse automation rules, review-only manufactured and
+  multifamily records, land exclusion, and neutral handling of missing square footage
+- Streaming, revision-safe Redfin county-market importer (price, sales,
+  inventory, new listings, market velocity)
+- 24-month Wayne County Auditor ArcGIS comparable-sales importer with a
+  conservative arm's-length proxy, parcel-bundle suppression, and provisional-source labeling
+- `ingest_errors` quarantine for supported-class auditor records that cannot be
+  normalized, keyed by payload fingerprint and error code
+- Source-tracked property-attribute evidence (`listing_property_attribute_evidence`);
+  reviewed exact-match auditor living area can fill missing listing square footage
+  without overwriting provider history
+
+Scoring and analysis
+
+- One authoritative county-level market score (coarse context only)
+- Versioned deterministic comparable selection with visible fallback tiers
+- Explainable comparable valuation: weighted-median price per square foot,
+  outlier safeguards, value ranges, and confidence components
+- Deal Score v2 with immutable valuation snapshots, six versioned components,
+  and an aggregate that distinguishes complete, partial, and unavailable results
+- Versioned threshold policies (`deal-score-thresholds-v1` active) with a
+  transactional admin command; policy changes produce new fingerprints and leave
+  earlier results reproducible
+- RentCast long-term rent AVM with request fingerprints and 30-day reuse;
+  cash flow, gross yield, cap rate, and DSCR loan sizing
+- Five-year rental scenarios at fixed assumed growth rates (-1%, 2%, 4%)
+- Mortgage-rate outlooks (PMMS, Treasury, CPI, NY Fed SME) with backtesting
+  and automatic calibration rejection
+- Optional AI analyst endpoints (OpenAI, disabled by default) with evidence
+  snapshots and human review records
+
+Searches, alerts, and API
+
 - Versioned saved searches with validated, explainable criteria evaluation
 - Stable listing/search event fingerprints and persisted match transitions
-- A PostgreSQL-backed price-drop alert outbox with atomic worker claims, retries, and visible permanent failures
-- A RentCast active-sale-listing adapter with bounded pagination, normalized
-  fields, secret-header authentication, and a read-only coverage audit
-- A Wayne County RentCast shadow sync with persistent alert isolation, explicit
-  single-family/condo/townhouse automation rules, review-only manufactured and
-  multifamily records, land exclusion, and neutral handling for unavailable
-  square footage
-- A streaming, revision-safe Redfin county-market importer that supplies real
-  Wayne County price, sales, inventory, listing, and market-velocity history
-- A 24-month Wayne County Auditor ArcGIS comparable-sales importer with
-  conservative sale-validity proxying, parcel-bundle suppression, and explicit
-  provisional-source labeling
-- An all-listing CSV review, batch Deal Score v2 valuation backfill, auditable
-  shadow-run history, promotion-readiness checks, and a weekly Docker shadow
-  scheduler that has no Slack configuration
+- PostgreSQL alert outbox with atomic claims, retries, and visible permanent failures
+- Slack alerts for price drops and potential deals (sample pipeline only)
+- FastAPI API and a local shadow-review dashboard (`/dashboard`)
+- Opt-in bearer-token auth (`API_AUTH_REQUIRED`), per-client rate limiting,
+  and structured JSON request logs that omit tokens and query strings
 
-The primary production-style alert pipeline still loads sample data from
-`data/sample_listings.csv`. The dedicated shadow pipeline now runs real Wayne
-County inputs and Deal Score v2 review without evaluating searches or queueing
-alerts. Promotion to alert-eligible ingestion remains intentionally disabled.
+Operations
+
+- Docker Compose services: Postgres, API, `shadow` profile (scheduler), and
+  `backup` profile (daily dumps plus weekly isolated restore verification)
+- `/health` reports database connectivity, shadow-run freshness, alert backlog,
+  and permanent alert failures (`degraded` when stale or failing)
+- Shadow scheduler recovers deadlines from run history across restarts and host
+  sleep; scheduled RentCast calls are off unless
+  `SHADOW_ENABLE_RENTCAST_API_CALLS=true`
+- CI on every push: Ruff, unit tests, and Compose config validation
+- Unit tests plus opt-in isolated PostgreSQL integration tests
+
+## Known issues found in this review
+
+1. **Resolved October 28: shadow deadline health check was on the wrong
+   service.** Commit `23f0f10` attached it to `backup`; it now runs on
+   `shadow-runner`.
+2. **Resolved October 28: unhealthy containers were not restarted.** Compose
+   restart policies act on process exit, not health status. The scheduler now
+   runs an in-process watchdog that exits after two consecutive missed-deadline
+   checks so `restart: unless-stopped` recovers it. The six-hour failure backoff
+   also uses the suspend-safe `sleep_until`. The API healthcheck still only
+   reports unhealthy status.
+3. **Readiness passes on stale listing data.** Docker Desktop was not running
+   from about September 18 to October 28, so no runs occurred in that gap. Run 4
+   (October 28) made readiness pass, but runs 3 and 4 skipped RentCast (scheduled
+   calls are off by default), so the newest listing data is from September 16.
+   The observations re-score the same listings rather than observe new market
+   activity. **Addressed October 28:** scheduled RentCast refreshes are enabled
+   locally with a request budget (60-hour minimum spacing, 40 requests per UTC
+   month against the plan's 50), and readiness now requires each of the latest
+   three run dates to include a successful RentCast sync. Readiness is
+   correctly not ready again until three fresh observations accumulate.
+4. **`provider_sync_state` is created at runtime.** `app/providers/sync.py`
+   issues its own `CREATE TABLE` instead of using an Alembic revision, and
+   `sync_provider` processes one page per call. Both must be resolved before the
+   generic sync path is used for live ingestion.
+5. **Rental scenario assumptions are hard-coded.** Growth rates and the 0.74
+   rent-to-cash-flow pass-through in `app/market/rental_forecast.py` are not
+   derived from market rent history and are not stored in a policy table.
+
+## Alert promotion gates
+
+Promotion of RentCast listings to alert eligibility requires all of the following.
+Passing `python -m app.shadow.readiness` alone does not satisfy them.
+
+- [x] Three successful shadow run dates spanning at least 14 days
+      (four runs over 49 days as of October 28; see known issue 3)
+- [x] At least 70% supported comparable valuation coverage
+      (97.78% minimum across recent runs)
+- [x] Zero alert-eligible shadow listings
+- [ ] Latest three run dates each synced RentCast listings (readiness check
+      `recent_run_dates_synced_listings`; earliest pass about November 6 at
+      the three-day cadence)
+- [ ] Comparable transaction validity confirmed by an authoritative export or
+      licensed feed (see [Wayne County valid sales](docs/wayne-county-valid-sales.md);
+      the request to the auditor has been drafted but not sent)
+- [ ] Evidence obtained for the 21 flagged listings; none has been cleared
+- [ ] Slack notification hardening and test-channel validation (Phase 4)
+- [ ] Separate, explicit approval for production alert activation
 
 ## Near-term priorities
 
-The core prototype is now substantially more capable than the original roadmap suggested. The remaining work is mostly about hardening the system and connecting it to a real data source.
-
-1. Monitor the enabled three-day shadow runner and accumulate the required
-   observations. All 21 flags have an evidence review; 73 homes have complete
-   scores, and all listings remain in shadow mode.
-2. Retain the original database, fresh cutover backup, and legacy archive for
-   rollback. The prototype migration path and development cutover are validated.
-3. Replace the ArcGIS arm's-length proxy with the auditor's machine-readable
-   valid-sales export or a licensed closed-sale feed before alert promotion.
-4. Replace the remaining hard-coded deal-score behavior with versioned, configurable thresholds.
-5. Add geographic bounding-box criteria once provider coordinates are available.
-6. Continue improving the deal-scoring model so it combines comparable valuation, local market context, price-change history, and confidence more transparently.
-7. Add a separately deployed long-running alert worker only after promotion;
-   the alert-isolated three-day shadow scheduler is implemented.
-8. Add structured logging, authentication, monitoring, and backup automation;
-   shadow pipeline-run history is implemented.
-9. Extend `/health` to report sync freshness and backlog health, not just database connectivity.
+1. Confirm the October 31 run (18:18 UTC) fetches RentCast listings and
+   records `rentcast_requested`; watch monthly usage in the scheduler logs.
+2. Keep Docker Desktop running (start at sign-in) and review each new report in
+   `data/shadow-runner/`.
+3. Obtain a transaction-level valid-sales export: download a sample from the
+   auditor's Sales Report page or send the drafted request. Do not build a parser
+   around an assumed format.
+4. Obtain evidence for flagged listings: the 18 low-confidence valuations
+   ([review](docs/low-confidence-review.md)) and the no-comparables home at
+   254 W Wayne Ave ([scoring gaps](docs/scoring-gap-review.md)).
+5. Decide whether to add a Fredericksburg abbreviation mapping to the auditor
+   parser. Keep multi-value property records quarantined until a deterministic
+   parcel/dwelling rule is documented.
+6. Finish Phase 4 Slack hardening before any alert activation.
+7. Extend CI with an Alembic upgrade/downgrade check against Postgres, the
+   integration suite, and secret scanning.
+8. Move the generic provider sync to Alembic-managed state with multi-page
+   resumable cursors (known issue 4).
+9. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
 
@@ -90,80 +166,28 @@ The core prototype is now substantially more capable than the original roadmap s
 - Keep alert thresholds configurable and versioned.
 - Avoid changing notification behavior without testing it against a Slack test channel.
 
-## Phase 1: Stabilize the prototype — Implemented
+## Phase 1: Stabilize the prototype — Complete
 
-Implementation commit: `8b892c7`
+Implementation commit: `8b892c7`. Alembic replaced numbered SQL schema files;
+raw payloads became immutable JSONB with content hashes; configuration was
+consolidated into one settings module and engine (`DB_*` with `POSTGRES_*`
+aliases and optional `DATABASE_URL`); normalization, Docker readiness checks,
+`--skip-alerts`, and idempotent upserts, snapshots, scoring, and alert-ledger
+recording were added. Database-level idempotency was confirmed against a fresh
+PostgreSQL test database on September 8, 2026.
 
-Validation completed:
+## Phase 2: Configurable saved searches — Complete
 
-- 19 unit/API tests passed
-- Ruff lint and formatting checks passed
-- Python compilation and dependency checks passed
-- Alembic upgrade and downgrade SQL generation passed
-- Four PostgreSQL integration tests were added and safely skipped because no
-  `_test` database was available
-- No Slack messages were sent during implementation or validation
+Implementation commit: `17cee39`. Adds `saved_searches` and
+`listing_search_evaluations` (revision `0002`), strict versioned JSONB criteria,
+one shared pure evaluator, structured match/failure reasons, immediate/digest
+mode with cooldown, stable event fingerprints, CRUD and evaluation endpoints,
+and a pipeline step. Integration validation passed on September 8, 2026.
 
-### Completed work
-
-- [x] Chose the source-aware `listing_market_scores` schema as authoritative.
-- [x] Replaced ambiguous numbered SQL schema files with Alembic.
-- [x] Made `listings_raw` an immutable JSONB payload store with content hashes.
-- [x] Consolidated configuration into one settings module and SQLAlchemy engine.
-- [x] Standardized database settings on `DB_*`, with optional `DATABASE_URL`.
-- [x] Added `.env.example` with safe placeholders and no secrets.
-- [x] Replaced the broken duplicate API scoring query with the authoritative
-      county-market scorer.
-- [x] Normalized status, property type, state, ZIP, dates, and integer fields.
-- [x] Added PostgreSQL readiness checks and API startup to Docker Compose.
-- [x] Added comprehensive README documentation.
-- [x] Added unit and opt-in isolated PostgreSQL integration tests.
-- [x] Added `--skip-alerts` for safe pipeline validation.
-- [x] Made current upserts, raw ingestion, history snapshots, scoring timestamps,
-      and alert-ledger recording idempotent where possible.
-
-### Acceptance status
-
-- [x] PostgreSQL startup and schema initialization are documented.
-- [x] All modules use the same database settings and engine.
-- [x] Execute sample ingestion against a fresh live PostgreSQL test database.
-- [x] Execute sample ingestion twice and confirm database-level idempotency.
-- [x] API imports and non-database endpoint tests pass.
-- [x] Tests cover ingestion, normalization, price changes, scoring stability,
-      alert-ledger idempotency, and dry-run alert suppression.
-- [x] No credentials are committed.
-
-Both database checks passed on September 8, 2026 in an isolated PostgreSQL
-test database. The existing development database was not migrated.
-
-## Phase 2: Build configurable saved searches — Implemented
-
-Implementation commit: `17cee39`
-
-The implementation is committed and pushed. PostgreSQL integration validation
-passed on September 8, 2026 in an isolated test database.
-
-### Completed work
-
-- [x] Added `saved_searches` and `listing_search_evaluations` in Alembic
-      revision `0002_saved_searches`.
-- [x] Stored strict, validated, versioned criteria as JSONB.
-- [x] Built one pure criteria evaluator shared by the pipeline, API, and CLI.
-- [x] Added state, county, city, ZIP, price, beds, baths, property type,
-      listing status, square feet, acreage, days-on-market, price-drop, and
-      deal-score filters.
-- [x] Kept binary saved-search matching separate from county-market ranking.
-- [x] Stored structured matching and failure reasons.
-- [x] Incremented `criteria_version` only when criteria change.
-- [x] Added immediate/digest mode, cooldown, and enabled/disabled controls.
-- [x] Added stable listing and event fingerprints with database uniqueness.
-- [x] Recorded explicit nonmatch-to-match transitions without sending Slack.
-- [x] Added CRUD, evaluation, and evaluation-history API endpoints.
-- [x] Added a safe evaluation CLI and enabled-search pipeline step.
 - [ ] Add optional geographic bounding-box criteria after provider coordinates
       are available.
 
-### Example criteria
+Example criteria:
 
 ```json
 {
@@ -179,65 +203,33 @@ passed on September 8, 2026 in an isolated test database.
 }
 ```
 
-### Acceptance status
-
-- [x] Unit tests verify clear matching and non-matching reasons.
-- [x] Unit tests verify validation, normalization, inclusive boundaries, missing
-      values, location OR semantics, and price-drop thresholds.
-- [x] Integration tests cover multiple searches evaluating the same listing.
-- [x] Integration tests cover unchanged reruns producing no new event.
-- [x] Integration tests cover one new event per meaningful listing transition.
-- [x] Integration tests cover criteria versioning and non-versioning notification
-      setting edits.
-- [x] Notification semantics and the absence of Phase 2 Slack delivery are
-      documented.
-- [x] Execute the Phase 2 integration test against a PostgreSQL `_test` database.
-
-Local validation completed:
-
-- 31 non-database tests passed
-- Five PostgreSQL integration tests collected and safely skipped
-- Ruff lint and format checks passed
-- Python compilation and dependency checks passed
-- Alembic upgrade and downgrade SQL generation passed
-- No Slack messages were sent
-
-## Phase 3: Connect an authorized live listing provider
+## Phase 3: Connect an authorized live listing provider — In progress
 
 ### Provider decision
 
-Wayne County, Ohio is the pilot geography. A RentCast adapter and bounded,
-read-only coverage audit are implemented as the initial non-MLS route. The
-coverage audit found 105 unique Wayne County listings across the three pilot
-cities, with 100% price, days-on-market, and history coverage. A controlled
-shadow importer now keeps RentCast listings ineligible for alerts, marks land
-ineligible for scoring, and keeps homes with unavailable square footage
-eligible for non-square-footage scoring. Keep a direct MLS Now/Trestle feed as the
-preferred long-term option if a broker relationship becomes available. Do not
-scrape consumer listing sites unless their terms and an explicit agreement
-authorize it.
+Wayne County, Ohio is the pilot geography. RentCast is the initial non-MLS
+route; the coverage audit found 98–105 unique Wayne County listings across
+Wooster, Orrville, and Rittman with full price, days-on-market, and history
+coverage. A direct MLS Now/Trestle feed remains the preferred long-term option
+if a broker relationship becomes available. Do not scrape consumer listing sites
+unless their terms and an explicit agreement authorize it.
 
 ### Work
 
-- Define a provider interface with operations such as:
-
-```python
-fetch_updated_since(cursor)
-normalize(raw_listing)
-next_cursor(response)
-```
-
-- Implement authentication and token refresh.
-- Read provider metadata and map provider/RESO fields into the internal model.
-- Support pagination and incremental retrieval by provider modification timestamp or cursor.
-- Store raw payloads before normalization.
-- Add rate limiting, bounded retries, exponential backoff, and request timeouts.
-- Persist synchronization cursors only after a page/batch commits successfully.
-- Track provider listing ID, provider modification timestamp, listing URL, photos, and attribution fields.
-- Handle active, coming soon, pending, sold, expired, canceled, withdrawn, and deleted/missing listings as permitted by the feed.
-- Detect listings that disappear from the feed without immediately deleting history.
-- Record every sync run with start/end time, cursor, counts, warnings, and failure details.
-- Document licensing, attribution, display, photo, and retention requirements.
+- [x] Provider interface (`fetch_updated_since`, `normalize`) with RentCast and fixture adapters
+- [x] Bounded pagination with request timeouts
+- [x] Store raw payloads before normalization
+- [x] Track provider listing ID and source
+- [x] Quarantine bad individual records (`ingest_errors`, auditor importer)
+- [x] Record shadow sync runs with start/end time, counts, and failure details (`shadow_pipeline_runs`)
+- [ ] Manage `provider_sync_state` in Alembic and persist cursors only after each page commits
+- [ ] Rate limiting, bounded retries, and exponential backoff for provider requests
+- [ ] Incremental retrieval by provider modification timestamp where supported
+- [ ] Track provider modification timestamp, listing URL, photos, and attribution fields
+- [ ] Handle active, coming soon, pending, sold, expired, canceled, withdrawn, and deleted/missing statuses
+- [ ] Detect listings that disappear from the feed without deleting history
+- [ ] Extend quarantine to RentCast listing normalization failures
+- [ ] Document licensing, attribution, display, photo, and retention requirements
 
 ### Acceptance criteria
 
@@ -248,32 +240,28 @@ next_cursor(response)
 - Current listing state and meaningful history are correct after repeated syncs.
 - Feed attribution and retention rules are documented and enforced.
 
-## Phase 4: Make notifications reliable
+## Phase 4: Make notifications reliable — In progress
 
 ### Work
 
-- [x] Introduce an alert outbox for price drops instead of sending directly
-  from detection logic.
-- [x] Use `pending`, `processing`, `sent`, `retryable_failed`, and
-  `permanent_failed` states.
-- [x] Add attempt counts, next-attempt timestamps, and error summaries.
-- [x] Claim pending alerts safely so multiple workers cannot send the same event.
-- [x] Uniquely constrain the price-drop event identity in PostgreSQL.
-- [x] Retry temporary Slack failures with exponential backoff.
-- [x] Separate price-drop detection/queueing from the delivery worker command.
-- Add jitter to retry delays.
-- Honor Slack HTTP 429 `Retry-After` responses.
-- Pace incoming-webhook messages at no more than approximately one per second.
-- Send malformed payloads and invalid/revoked webhook failures to permanent-failure handling.
-- Add Slack Block Kit formatting with:
-  - Address and listing URL
-  - Primary photo when permitted
-  - Current price and previous price
-  - Match reasons
-  - Relevant listing attributes
-  - Data source/attribution
-- Add digest mode to avoid flooding a channel.
-- Add a dry-run/test-channel mode.
+- [x] Alert outbox for price drops, separate from detection logic
+- [x] `pending`, `processing`, `sent`, `retryable_failed`, and `permanent_failed` states
+- [x] Attempt counts, next-attempt timestamps, and error summaries
+- [x] Safe claims so multiple workers cannot send the same event
+- [x] Unique price-drop event identity in PostgreSQL
+- [x] Exponential backoff for temporary failures (429 and 5xx are retryable)
+- [x] Separate detection/queueing from the delivery worker command
+- [x] Permanent failures visible in `/health`
+- [ ] Add jitter to retry delays
+- [ ] Honor Slack HTTP 429 `Retry-After` responses
+- [ ] Pace incoming-webhook messages at no more than about one per second
+- [ ] Route malformed payloads and invalid/revoked webhooks to permanent failure
+- [ ] Route potential-deal alerts through the outbox
+- [ ] Slack Block Kit formatting: address and listing URL, permitted primary
+      photo, current and previous price, match reasons, key attributes, and
+      data source/attribution
+- [ ] Digest delivery to avoid flooding a channel
+- [ ] Dry-run/test-channel mode
 
 ### Acceptance criteria
 
@@ -283,25 +271,32 @@ next_cursor(response)
 - Alerts link to the listing and explain why it matched.
 - A test mode can validate messages without notifying the production channel.
 
-## Phase 5: Operate it as an application
+## Phase 5: Operate it as an application — In progress
 
 ### Work
 
-- Containerize the API and background worker. The API and alert-isolated shadow
-  runner are implemented; the production alert worker remains separate.
-- Add a scheduler for incremental provider synchronization and alert processing.
-  Weekly shadow synchronization is implemented; alert processing is not enabled.
-- Use structured logging with run IDs, provider IDs, and event IDs.
-- Add pipeline-run tables and operational metrics. Shadow run history and the
-  promotion-readiness calculation are implemented.
-- Change `/health` to report database connectivity and last successful sync freshness.
-- Add readiness and liveness endpoints if deployed behind an orchestrator.
-- Add authentication and authorization before publicly exposing searches, listings, or alerts.
-- Validate and limit API pagination and expensive queries.
-- Add PostgreSQL backups and a restore test.
-- Add CI for formatting, linting, tests, migrations, and secret scanning.
-- Add monitoring for stale syncs, repeated provider failures, alert backlog, and database capacity.
-- Document deployment, rollback, backup, restore, credential rotation, and incident response.
+- [x] Containerize the API and alert-isolated shadow runner
+- [x] Three-day shadow scheduler with persisted deadlines and host-sleep recovery
+- [x] Shadow pipeline-run table and promotion-readiness calculation
+- [x] `/health` reports database connectivity, last successful sync freshness,
+      alert backlog, and permanent failures
+- [x] Opt-in bearer-token authentication and per-client rate limiting
+- [x] Structured JSON API request logs
+- [x] Daily PostgreSQL backups and weekly isolated restore verification
+      (first restore verified September 11: 34 tables, 6,123 rows)
+- [x] CI for linting, unit tests, and Compose configuration
+- [x] Shadow deadline healthcheck on `shadow-runner` with a self-exiting
+      watchdog so the restart policy recovers a missed deadline
+- [ ] Separately deployed production alert worker and alert-processing schedule
+      (after promotion)
+- [ ] Structured logging with run, provider, and event IDs in pipelines and workers
+- [ ] Operational alert for stale or failed syncs (health is pull-only today)
+- [ ] Monitoring for repeated provider failures and database capacity
+- [ ] Off-machine backup copies and a retention policy
+- [ ] Readiness and liveness endpoints if deployed behind an orchestrator
+- [ ] Validate and limit API pagination and expensive queries
+- [ ] CI for migrations, integration tests, and secret scanning
+- [ ] Document deployment, credential rotation, and incident response
 
 ### Acceptance criteria
 
@@ -312,126 +307,94 @@ next_cursor(response)
 - CI blocks broken migrations and failing tests.
 - Secrets can be rotated without code changes.
 
-## Recommended data model additions
+## Data model
 
-Likely additions include:
+Implemented: `saved_searches`, `listing_search_evaluations`, `alert_outbox`,
+`shadow_pipeline_runs`, `ingest_errors`, `listing_property_attribute_evidence`,
+`listing_rent_estimates`, `rental_underwriting_analyses`,
+`rental_forecast_scenarios`, and `deal_score_policies`.
 
-- `saved_searches`
-- `listing_changes` or `listing_events`
-- `listing_search_matches`
-- `alert_outbox`
-- `provider_sync_state`
-- `pipeline_runs`
-- `ingest_errors` or a dead-letter/quarantine table
+Still needed:
 
-Important stable identifiers:
+- `provider_sync_state` under Alembic (currently created at runtime)
+- `listing_events` for disappearance and status transitions
+- General `pipeline_runs` covering the sample pipeline and alert worker
+
+Stable identifiers:
 
 - Listing: `(provider/source, provider listing ID)`
 - Search version: `(saved search ID, criteria version)`
 - Material state: normalized fingerprint of tracked listing fields
 - Alert event: `(listing, search version, event type, material state)`
 
-## Scoring recommendations
+## Scoring
 
-The current county-median score remains implemented as coarse market context.
-The property-level comparable-sales schema, CSV importer, deterministic
-selection tiers, and comparable valuation with confidence scoring are
-implemented. Immutable valuation persistence, the comparable-discount
-component, listing-opportunity component, days-on-market component, and
-market-momentum component, liquidity-and-inventory component, data-confidence
-component, and immutable 100-point aggregation are also implemented. The Wayne
-County shadow backfill and all-listing output review are implemented; alert
-activation remains gated. Deal Score v2 must not replace the current score
-until repeated-run review and transaction-validity confirmation are complete.
+The county-median score remains as coarse market context. Deal Score v2 is fully
+implemented but stays in shadow review until the promotion gates are met.
 
-The August 16 shadow review found that manufactured homes created the dominant
-county-median false-positive pattern: 9 of the original top 15 results were
-outside the automated property-type policy. After applying the policy, 79 of
-105 listings were comparable-ready and 78 received a supported valuation from
-the provisional auditor feed. All 79 have a partial review score with 70%
-component coverage; these normalized available-evidence scores are useful for
-review but are not final Deal Score v2 totals.
+### Deal Score v2
 
-### Proposed Deal Score v2
+A transparent 100-point score, with thresholds held in the active
+`deal_score_policies` row:
 
-Use a transparent 100-point score:
+- 40 points: discount to estimated comparable value
+- 15 points: listing opportunity (cumulative price reductions, frequency, recency)
+- 15 points: days on market relative to the county median
+- 15 points: market momentum (3-month change at 40%, 12-month at 60%; zero at
+  -10%, neutral at 0%, full at +10%)
+- 10 points: liquidity and inventory (6 points for inventory months, full at ≤2
+  and zero at ≥8; 4 points for sold-to-new ratio, full at 1.0 and zero at 0.5)
+- 5 points: data confidence (3 for comparable quality, 2 for coverage of the other 95)
 
-- 40 points: discount to an estimated comparable value
-- 15 points: listing opportunity, including cumulative price reductions and
-  reduction frequency
-- 15 points: days on market relative to the local median
-- 15 points: local price trend or market momentum
-- 10 points: local liquidity and inventory conditions
-- 5 points: data confidence and comparable-sample quality
+Missing submetrics receive neutral weighted credit; stale or wholly
+insufficient context makes a component unavailable. A final score is published
+only when all six components are available. Partial results keep available
+points, coverage, and a normalized available-evidence score, which is not a final
+total. County median sale price provides context but never defines a deal on its
+own, and price per square foot feeds valuation only, to avoid double-counting.
 
-County median sale price should contribute contextual information but should
-not independently define a deal. Price per square foot remains an input to
-comparable valuation rather than a separately scored component, avoiding
-double-counting the same evidence.
-
-The implemented market-momentum component blends 3-month median sale-price
-change at 40% with 12-month change at 60%. A horizon scales from zero points at
-a 10% decline, through neutral at no change, to full credit at a 10% increase.
-Missing horizons receive neutral weighted credit; stale history or the absence
-of both reference horizons produces an unavailable component.
-
-The implemented liquidity-and-inventory component uses 6 points for an
-inventory-months proxy (`active listings / homes sold`) and 4 points for the
-sold-to-new-listings ratio. The inventory proxy receives full credit at two
-months or less and zero at eight months or more. The sales-flow ratio receives
-full credit at 1.0 and zero at 0.5. Missing submetrics receive neutral weighted
-credit, while stale or wholly insufficient context remains unavailable.
-
-The implemented data-confidence component uses 3 points for comparable quality
-and 2 points for coverage of the other 95 score points. The aggregate publishes
-a final score only when all six components are available. Partial calculations
-retain available points, coverage, and a normalized available-evidence score
-without presenting that normalization as the final Deal Score v2.
+Latest reviewed results (September 15 shadow run): 18 valued listings at `low`
+confidence. Earlier September 9 review: 73 of 74 comparable-ready listings
+complete, one unavailable with no suitable comparables. Manufactured and
+multifamily homes stay review-only pending type-specific valuation.
 
 ### Comparable selection
 
-Prefer recent sold properties with:
-
-- The same property type
-- The same ZIP or Census tract when sample size permits
-- Similar beds and baths
-- A bounded square-foot range
-- Similar lot size
-- Similar age or year-built range
-- A documented maximum sale age
-
-Widen geography or similarity bands only when the initial comparable set is too
-small. Record which fallback level was used.
+Prefer recent sold properties with the same property type, the same ZIP or
+Census tract when sample size permits, similar beds, baths, square footage, lot
+size, and age, and a documented maximum sale age. Widen geography or similarity
+bands only when the initial set is too small, and record the fallback level.
 
 ### Separate subscores
 
-Do not hide every investment concern inside one number. Store and expose:
+Store and expose rather than hide in one number:
 
-- `deal_score`: purchase price relative to supported market value
-- `rental_score`: rent yield, operating costs, and estimated cash flow
-- `market_momentum_score`: price trend, inventory, and market velocity
-- `risk_score`: hazard, insurance, tax, condition, and data risks
-- `confidence_score`: comparable count, recency, similarity, and missing data
+- `deal_score`: purchase price relative to supported market value — implemented
+- `rental_score`: rent yield, operating costs, and cash flow — inputs implemented
+  (`rental_underwriting_analyses`); no normalized score yet
+- `market_momentum_score`: price trend, inventory, and velocity — implemented as
+  Deal Score v2 components
+- `risk_score`: hazard, insurance, tax, condition, and data risks — not started
+- `confidence_score`: comparable count, recency, similarity, and missing data —
+  implemented as the data-confidence component
 
-The initial Deal Score v2 implementation should not require rental or risk data;
-those subscores can remain unavailable until reliable sources are connected.
+Rental follow-up:
 
-Rental underwriting baseline status:
-
-- [x] Add bounded RentCast long-term rent AVM retrieval with request fingerprints,
-  estimate ranges, comparables, immutable provider snapshots, and 30-day reuse.
-- [x] Add explicit monthly cash flow, gross yield, cap rate, and expense assumptions.
-- [x] Size a target DSCR loan at the lower of 1.25 DSCR support and 75% LTV,
-  using a stored PMMS-plus-spread rate basis and 30-year amortization.
-- [x] Expose rent and DSCR results in the local shadow-review dashboard.
-- [ ] Add market rent history and scenario growth rates before labeling the
-  current point-in-time AVM as a multi-year rent forecast.
+- [x] Bounded RentCast rent AVM with request fingerprints, ranges, comparables,
+      immutable snapshots, and 30-day reuse
+- [x] Explicit cash flow, gross yield, cap rate, and expense assumptions
+- [x] DSCR loan sized at the lower of 1.25 DSCR support and 75% LTV, using a
+      stored PMMS-plus-spread rate and 30-year amortization
+- [x] Rent and DSCR results in the shadow-review dashboard
+- [x] Five-year conservative/base/upside scenarios (`rental-growth-scenarios-v1`)
+- [ ] Derive growth rates from market rent history and version the assumptions
+      before presenting scenarios as a forecast
 
 ### Explainability and safeguards
 
 Persist each input, normalized component score, weight, contribution, final
-score, scoring version, and human-readable reason. Missing data must reduce
-confidence rather than silently receiving a favorable score.
+score, scoring version, policy version, and human-readable reason. Missing data
+must reduce confidence rather than silently receive a favorable score.
 
 Do not use protected-class data or demographic proxies to value or rank
 properties. Test scoring results for geographic bias before using the score in
@@ -445,102 +408,33 @@ consumer-facing or credit-related decisions.
 - Missing or sparse comparable data produces a lower confidence score.
 - Every final score can be reconstructed from persisted component values.
 - Score weights and thresholds are versioned.
-- Tests cover boundary values, missing data, outliers, and small comparable
-  samples.
+- Tests cover boundary values, missing data, outliers, and small comparable samples.
 
 ## Mortgage-rate intelligence
 
-Add financing context alongside Deal Score v2. Mortgage-rate information should
-remain a separate, timestamped analysis rather than being hidden inside the
-property deal score because an individual borrower's actual rate depends on
-credit, loan structure, down payment, points, lender, and location.
+Mortgage-rate information stays a separate, timestamped analysis rather than
+part of the property deal score, because a borrower's actual rate depends on
+credit, loan structure, down payment, points, lender, and location. Freddie Mac's
+Primary Mortgage Market Survey is the authoritative rate source.
 
-### Rate data
+### Status
 
-Store:
-
-- Current national average 30-year and 15-year fixed mortgage rates
-- Weekly historical observations
-- Observation date, publication date, source, product type, and methodology
-  version
-- Changes over 1, 4, 13, 26, and 52 weeks
-- Rolling averages, recent range, volatility, and distance from recent highs
-  and lows
-
-Use Freddie Mac's Primary Mortgage Market Survey as the initial authoritative
-mortgage-rate source. Its downloadable history extends back to 1971. Preserve
-source attribution and account for documented methodology changes when
-comparing long periods.
-
-### Market drivers and sentiment
-
-Track explanatory indicators separately from observed mortgage rates:
-
-- Federal funds target range and recent FOMC decisions
-- FOMC Summary of Economic Projections
-- New York Fed Survey of Market Expectations
-- Treasury yields, especially the 2-year and 10-year
-- Inflation measures and recent inflation trend
-- Employment and unemployment releases
-- Mortgage-rate spread to the 10-year Treasury
-- Mortgage-backed-securities indicators when a licensed, reliable source is
-  available
-
-Prefer structured surveys and market-implied measures over unsourced news
-sentiment. If narrative news analysis is added later, retain source links,
-publication timestamps, extracted claims, and model/version provenance.
-
-### One-to-three-month directional outlook
-
-Produce separate 1-month and 3-month outlooks with:
-
-- Probabilities that mortgage rates will be `lower`, `roughly_stable`, or
-  `higher`
-- A defined stable band, initially within 0.25 percentage points
-- Confidence level and data-freshness status
-- Primary upward and downward drivers
-- Forecast creation time, target date, input snapshot, and model version
-- Subsequent actual outcome for backtesting
-
-Begin with a transparent rules-based model using recent mortgage-rate momentum,
-Treasury-yield momentum, inflation trend, and structured policy expectations.
-Do not present the result as certainty or personalized financial advice.
-
-Baseline implementation status:
-
-- [x] Add versioned 1-month and 3-month `lower`, `roughly_stable`, and `higher`
-  probabilities using PMMS momentum and recent volatility.
-- [x] Persist the input snapshot, explanatory drivers, target date, confidence,
-  and model version for reproducibility and later backtesting.
-- [x] Cap confidence because the baseline does not yet include explanatory
-  market signals.
-- [x] Add 2-year and 10-year Treasury histories and use 10-year yield momentum
-  in `multi_signal_v2`.
-- [x] Add CPI history and the recent change in year-over-year inflation.
-- [x] Add structured combined-panel federal-funds expectations from the New
-  York Fed Survey of Market Expectations.
-- [x] Bound FRED storage to rolling three-year daily-rate windows and a rolling
-  ten-year monthly CPI window.
-- [x] Add completed-outcome backtesting, chronological train/holdout splits,
-  Brier scores, and persisted calibration artifacts.
-- [x] Reject calibration automatically when it fails to improve on both the raw
-  model and a stable-rate holdout baseline.
-- [ ] Add point-in-time CPI and PMMS vintages to eliminate remaining revision
-  bias in historical tests.
-- [ ] Improve signal design until a later chronological holdout beats the
-  stable-rate baseline; do not deploy the current rejected calibration scales.
-
-### Affordability scenarios
-
-For each listing, show estimated principal-and-interest payments at:
-
-- The current benchmark mortgage rate
-- Current rate minus 0.50 percentage points
-- Current rate plus 0.50 percentage points
-
-Make loan amount, down payment, term, taxes, insurance, HOA, and other cost
-assumptions explicit. Keep these scenarios separate from lender quotes and
-borrower-specific qualification.
+- [x] Versioned 1-month and 3-month `lower`, `roughly_stable`, and `higher`
+      probabilities with a 0.25-point stable band
+- [x] Persisted input snapshots, drivers, target dates, confidence, and model version
+- [x] 2-year and 10-year Treasury histories; 10-year momentum in `multi_signal_v2`
+- [x] CPI history and year-over-year inflation change
+- [x] NY Fed Survey of Market Expectations federal-funds expectations
+- [x] Bounded FRED storage (three-year daily, ten-year monthly CPI windows)
+- [x] Completed-outcome backtesting, chronological splits, Brier scores, and
+      persisted calibration artifacts
+- [x] Automatic calibration rejection when it fails to beat both the raw model
+      and a stable-rate baseline
+- [ ] Point-in-time CPI and PMMS vintages to remove revision bias
+- [ ] Improve signals until a chronological holdout beats the stable-rate
+      baseline; do not deploy the current rejected calibration scales
+- [ ] Affordability scenarios per listing at the benchmark rate and ±0.50
+      points, with explicit loan, tax, insurance, and HOA assumptions
 
 ### Acceptance criteria
 
@@ -548,162 +442,56 @@ borrower-specific qualification.
 - Every displayed rate and outlook includes an as-of time and source.
 - Trend calculations cannot mix incompatible products or methodologies without
   an explicit adjustment or warning.
-- Outlook probabilities sum to 100 percent and are reproducible from a stored
-  input snapshot.
+- Outlook probabilities sum to 100 percent and are reproducible from a stored snapshot.
 - Forecast accuracy and calibration are measured by horizon and model version.
 - Stale or missing upstream data lowers confidence and is visible to users.
-- Affordability calculations have boundary tests and match independently
-  verified amortization examples.
+- Affordability calculations have boundary tests and match verified amortization examples.
 - No forecast language implies guaranteed rate direction.
 
 ## Validation strategy
 
-The test suite should eventually include:
+Covered today: normalization with provider fixtures, criteria boundaries,
+price-change and fingerprint logic, alert idempotency, repeated-ingestion
+integration, bounded single-page provider fetches, scheduler deadlines, health,
+backups, and dry-run alert suppression.
 
-- Normalization unit tests with provider fixtures
-- Criteria boundary tests
-- Status-enumeration tests
-- Price-change and fingerprint tests
-- Alert idempotency tests
-- Migration tests against fresh PostgreSQL
-- Repeated-ingestion integration tests
-- Provider pagination, throttling, and retry tests
-- Slack 200, 429, temporary 5xx, and permanent 4xx tests
-- End-to-end dry-run pipeline test
+Still needed:
 
-## Local validation: September 8, 2026
+- Multi-page provider pagination and interrupted-sync resume tests
+- Status-enumeration tests for the full listing lifecycle
+- Migration tests against fresh PostgreSQL in CI
+- Provider throttling and retry tests
+- Slack 200, 429 with `Retry-After`, temporary 5xx, and permanent 4xx tests
+- End-to-end dry-run test of the shadow pipeline
 
-- Ran `python -m pytest -m integration -q` against a newly created
-  `validation_20260908_test` database on local PostgreSQL 16: **18 passed**,
-  145 deselected, one dependency deprecation warning. This was the integration
-  suite only, not a full unit-test run.
-- The fixture applied all Alembic revisions through `0014_shadow_pipeline_runs`
-  in an isolated schema. Tests verified repeated ingestion and snapshots,
-  saved-search evaluation/versioning, comparable persistence, scoring, and
-  mocked alert delivery. No real Slack messages were sent.
-- Read-only inspection of the configured `realestate` database found eight
-  legacy public tables, no `alembic_version`, no `shadow_pipeline_runs`, and
-  three sample listings plus one fixture listing. No local shadow review CSV
-  was available. The historical August 16 figures above do not establish
-  readiness in this local database.
-- `python -m app.shadow.readiness` failed because central settings read `DB_*`,
-  while local configuration uses `POSTGRES_*`. The legacy utility accepts those
-  aliases and confirmed database state without modifying it. The README
-  currently overstates alias support across application paths.
-- No development migration, provider ingestion, or alert activation was
-  performed. Transaction-validity confirmation remains a separate promotion
-  requirement that the readiness command does not check.
+## History
 
-## Configuration and migration follow-up: September 8, 2026
-
-- Central settings now accept `POSTGRES_*` aliases with `DB_*` precedence.
-  Docker Compose accepts both conventions for credentials, database name, and
-  the host port. The original `.env` was not edited.
-- Backed up the legacy database to ignored `data/backups/legacy_20260908.dump`
-  and restored it into `legacy_rehearsal_20260908_test`.
-- Added a test-database-only reconciliation command and explicit data-copy SQL.
-  The rehearsal built Alembic head, preserved original rows in `legacy_archive`,
-  and verified all copied non-raw values. Of 123 raw records, one listing payload
-  was copied, one duplicate collapsed, and 121 records without listing IDs remain
-  archive-only. See [the migration report](migrations/LEGACY_MIGRATION.md).
-- Verified full rollback on invalid legacy data, refusal of repeat runs, and
-  refusal of development databases. Two alert-disabled pipeline runs succeeded;
-  the second produced no data changes.
-- Full suite: **166 passed**, including 18 PostgreSQL integration tests.
-  Configuration and Compose precedence checks passed; changed Python files
-  passed Ruff. No Slack messages or provider requests were made.
-- The original development database remains unchanged. The migrated review copy
-  has zero shadow observations; migration success does not establish readiness.
-
-## Next session: start here
-
-The September 8 cutover selected `realestate_dev_20260908` in local `.env`.
-The new database is at Alembic head; all original rows are retained in its
-`legacy_archive` schema and the untouched `realestate` database. Fresh-process
-API health, listing retrieval, readiness, and price detection passed. All copied
-listings remain alert-ineligible and no alerts are queued. The fresh dump and
-checksum/count report are under ignored `data/backups/`. See the
-[completed cutover and rollback instructions](migrations/LEGACY_MIGRATION.md).
-
-The first real shadow run subsequently succeeded (run ID 1, September 8 local
-time / September 9 UTC). The three-request audit found 98 unique Wayne County
-listings. The pipeline loaded 175 months of Redfin history and 2,038 normalized
-auditor sales; 12 unparseable auditor rows were skipped. Of 98 listings, 82 are
-scoring-eligible, 74 are comparable-ready, and 73 received supported valuations
-(98.65% coverage). The review CSV is `data/shadow_scoring_review.csv`; it flags
-21 listings for high-priority manual review and reports zero stored-policy
-mismatches. The outbox remains empty and no RentCast current/history row is
-alert-eligible. No Slack messages were sent and no recurring scheduler was started.
-
-All 74 score calculations lack listing-opportunity and days-on-market evidence:
-the pipeline's local analysis date is September 8, but its new snapshots fall on
-September 9 in UTC. The `snapshot_timestamp::date <= :as_of_date` queries exclude
-that history. Consequently 73 aggregates are partial at 70% coverage and one is
-unavailable at 30%; these are not final Deal Score v2 totals.
-
-The UTC boundary fix and stored-data recalculation are now complete. Default
-analysis dates, SQL history cutoffs, and snapshot recency consistently use UTC.
-Backfills freeze one date for the batch. Regression checks cover an evening
-New York timestamp and UTC-day cutoffs in UTC, New York, and Tokyo PostgreSQL
-sessions, including exclusion of next-day evidence. **171 tests passed**.
-
-The September 9 UTC recalculation completed all 74 attempts without errors:
-73 aggregates are now complete at 100% coverage; one remains unavailable at
-60% coverage because no suitable comparable sales were found. Repeating the
-calculation reused all valuations, components, and aggregates. The prior
-September 8 calculations and original shadow-run record remain unchanged.
-The CSV was regenerated; no provider requests or alerts occurred. No additional
-successful observation date was recorded by this backfill.
-
-All 21 flags were reviewed against stored valuation evidence on September 9 UTC:
-3 large estimated discounts, 16 low-confidence valuations, 1 missing living-area
-record, and 1 home without suitable comparables. Each has an evidence request and
-a retain-in-shadow disposition in ignored `data/flagged_listing_review_20260909.csv`,
-with a companion Markdown summary. The three discount flags rely on 4–5 included
-sales each; their matching omits year built, beds, and baths. This review did not
-independently verify condition, price terms, or transaction validity and did not
-change alert or scoring eligibility.
-
-The Docker shadow runner now uses a 72-hour interval and the existing 6-hour
-failure retry. Deadlines are recovered from database run history across restarts,
-with an initial deadline persisted in the data directory only when no history
-exists. The 14-day observation window starts at the first successful run;
-coverage is checked on the latest three successful run dates.
-Generated reports persist at `data/shadow-runner/shadow_scoring_review.csv`.
-Readiness now has two successful observation dates spanning six days. The
-September 15 run retained 97.78% minimum supported-valuation coverage, and no
-shadow listing was alert-eligible. The next run is due September 18; the
-14-day observation window remains the automated blocker.
-
-A September 15 address audit found one single-dwelling residential Wayne County
-Auditor parcel for each of the nine scoring-eligible listings missing provider
-square footage. These values remain candidate evidence and have not been applied
-to listings or valuations. A source-tracked property-attribute evidence model is
-required before using them.
-
-1. Monitor the three-day runner and review new reports. Obtain the requested evidence
-   for flagged listings before promotion; no flag was cleared by this data review.
-Revision `0015_ingest_errors` is deployed. A September 9 refresh fetched 2,849
-records, normalized 2,042, inserted 71 new raw payloads, and updated 4 current
-sales. It persisted all 12 rejected supported-class records: 11 contain ambiguous
-pipe-delimited living-area and year-built values, mostly for multiple dwellings,
-and 1 uses an abbreviated city spelling absent from the parser. These records
-remain quarantined rather than selecting an arbitrary value. The aggregate
-report exposes reason counts without raw payloads. Idempotency is covered by the
-integration suite, and the rebuilt three-day runner includes this behavior.
-
-2. Decide whether to add an explicit Fredericksburg abbreviation mapping after
-   confirming the auditor's address convention. Keep multi-value property records
-   quarantined until a deterministic parcel/dwelling rule is documented.
-3. Once the initial shadow run is reviewed, schedule continued observations and
-   collect three successful run dates spanning at least 14 days, at least 70%
-   supported comparable coverage, and zero alert-eligible shadow listings.
-4. Confirm comparable transaction validity using an authoritative export or
-   licensed feed and investigate missing score components before promotion.
-   Passing readiness alone does not satisfy these requirements.
-5. Add sync-freshness health reporting, CI, structured logging, and tested
-   backup/restore. Finish notification hardening and test-channel validation
-   before separately approved production alert activation.
+- **September 8, 2026:** Integration suite passed (18) on an isolated test
+  database. Legacy database backed up, rehearsed, and cut over to
+  `realestate_dev_20260908`, with originals retained in `legacy_archive` and the
+  untouched `realestate` database. See [legacy migration](migrations/LEGACY_MIGRATION.md).
+  Full suite: 166 passed.
+- **September 9:** First real shadow run (run ID 1): 98 listings, 175 months of
+  Redfin history, 2,038 auditor sales. A local-vs-UTC date bug excluded history
+  evidence; after the UTC fix and recalculation, 73 of 74 aggregates were complete.
+  21 flagged listings reviewed and retained in shadow. Auditor ingest errors
+  persisted (12 records: 11 ambiguous multi-dwelling values, 1 abbreviated city).
+- **September 11:** Daily backups and first verified restore. Scoring-gap and
+  valid-sales source investigations recorded in `docs/`.
+- **September 15:** Second observation date; 97.78% minimum valuation coverage.
+  Low-confidence and missing-square-footage audits; local review dashboard;
+  rent and DSCR underwriting.
+- **September 16–18:** Scheduled RentCast calls disabled by default; verified
+  auditor square footage applied through the attribute-evidence model; rental
+  scenarios; versioned deal-score thresholds; API auth, rate limiting, and JSON
+  request logs; backup verification worker; CI; host-sleep recovery; scheduler
+  deadline healthcheck (attached to the wrong service, see known issues).
+- **October 28:** Roadmap review. Docker Desktop had not been running since
+  about September 18. Moved the deadline healthcheck to `shadow-runner` and
+  added the self-exiting watchdog; 186 unit tests passed. On restart, run 4
+  succeeded (119 listings, 99 comparable-ready, 97 valued, 0 alert-eligible)
+  using September 16 listing data. Enabled budgeted scheduled RentCast
+  refreshes and added the listing-sync readiness check; 191 unit tests passed.
 
 ## External references
 
@@ -712,10 +500,8 @@ integration suite, and the rebuilt three-day runner includes this behavior.
 - Slack incoming webhooks: https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks
 - Slack rate limits: https://docs.slack.dev/apis/web-api/rate-limits/
 - Docker Compose startup/readiness guidance: https://docs.docker.com/compose/how-tos/startup-order/
-- Freddie Mac Primary Mortgage Market Survey:
-  https://www.freddiemac.com/pmms
-- Freddie Mac PMMS historical archive:
-  https://www.freddiemac.com/pmms/pmms_archives
+- Freddie Mac Primary Mortgage Market Survey: https://www.freddiemac.com/pmms
+- Freddie Mac PMMS historical archive: https://www.freddiemac.com/pmms/pmms_archives
 - Federal Reserve Summary of Economic Projections:
   https://www.federalreserve.gov/faqs/summary-economic-projections-sep.htm
 - New York Fed Survey of Market Expectations:

@@ -168,11 +168,19 @@ The shadow runner has no Slack webhook in its container environment and imports
 no alert module. Scheduled runs do not call RentCast by default, so they reuse
 the listings and rent estimates already stored in Postgres while refreshing
 Redfin context, auditor sales, valuations, the review report, and
-`shadow_pipeline_runs`. A future scheduled RentCast listing refresh requires an
-explicit `SHADOW_ENABLE_RENTCAST_API_CALLS=true` opt-in. Promotion remains
-blocked until three successful run dates span at least 14 days, no shadow
-listing has become alert-eligible, and at least 70% of comparable-ready homes
-have supported valuations. The default cadence is three days and can be changed
+`shadow_pipeline_runs`. Scheduled RentCast listing refreshes require an
+explicit `SHADOW_ENABLE_RENTCAST_API_CALLS=true` opt-in. Each refresh makes one
+request per pilot city (three in total). A request budget then applies: RentCast is
+skipped when listings were requested within `SHADOW_RENTCAST_MIN_HOURS`
+(default 60), so failure retries do not re-fetch, or when the run would exceed
+`SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT` (default 40) in the current UTC calendar
+month. The budget counts only scheduled and manual shadow-pipeline runs; leave
+headroom for audits and standalone syncs. A skipped run still refreshes the other
+sources. Promotion remains
+blocked until three successful run dates span at least 14 days, each of the
+latest three run dates synced RentCast listings, no shadow listing has become
+alert-eligible, and at least 70% of comparable-ready homes have supported
+valuations. The default cadence is three days and can be changed
 with `SHADOW_INTERVAL_HOURS`. The next deadline is recovered from persisted run history, including manual runs.
 `SHADOW_INITIAL_DELAY_HOURS` applies only before any run history exists; its
 initial deadline is persisted under the mounted data directory.
@@ -406,12 +414,15 @@ and a long random `API_AUTH_TOKEN`. Requests then require
 system. `API_RATE_LIMIT_PER_MINUTE` caps requests per process and client IP,
 with a default of 120. API request logs are structured JSON and omit tokens and
 query strings.
-Docker also monitors the API with a local `/health` check and restarts the
-service after repeated health-check failures.
+Docker also monitors the API with a local `/health` check and marks the
+container unhealthy after repeated failures. Compose restart policies act only
+when a process exits, so an unhealthy API is reported but not restarted.
 The shadow-runner has its own deadline check: if its latest run passes the
 scheduled interval (or failure-retry interval) by 15 minutes, Docker marks it
-unhealthy and restarts it. This prevents a paused host from leaving a stale
-long sleep in place after resume.
+unhealthy. An in-process watchdog runs the same check every five minutes and,
+after two consecutive misses, exits the scheduler so `restart: unless-stopped`
+starts a fresh one that recovers its deadline from run history. A run that
+lasts longer than the retry interval plus grace is treated as hung.
 
 `GET /health` reports database connectivity and shadow-pipeline history: last
 successful completion, its age in seconds, expected next attempt, latest run

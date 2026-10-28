@@ -67,6 +67,8 @@ services:
       SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}
       SHADOW_INITIAL_DELAY_HOURS: ${SHADOW_INITIAL_DELAY_HOURS:-0}
       SHADOW_ENABLE_RENTCAST_API_CALLS: ${SHADOW_ENABLE_RENTCAST_API_CALLS:-false}
+      SHADOW_RENTCAST_MIN_HOURS: ${SHADOW_RENTCAST_MIN_HOURS:-60}
+      SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT: ${SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT:-40}
     volumes:
       - ./data/shadow-runner:/app/data
     command:
@@ -76,6 +78,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.shadow.health"]
+      interval: 5m
+      timeout: 10s
+      retries: 2
+      start_period: 30s
     restart: unless-stopped
 
   backup:
@@ -96,12 +104,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-m", "app.shadow.health"]
-      interval: 5m
-      timeout: 10s
-      retries: 2
-      start_period: 30s
     restart: unless-stopped
 
   backup-verify:
