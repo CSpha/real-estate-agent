@@ -26,3 +26,55 @@ jobs:
           DB_PASSWORD: ci-placeholder
           POSTGRES_PASSWORD: ci-placeholder
           RENTCAST_API_KEY: ci-placeholder
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: realestate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci -d realestate_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYTHONPATH: .
+      PGPASSWORD: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      # Round-trip every migration on a fresh database so broken downgrades fail CI.
+      - run: psql -h localhost -U ci -d realestate_test -c "CREATE DATABASE migrations_test"
+      - name: Migrate up, down to base, and up again
+        env:
+          DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/migrations_test
+        run: |
+          python -m alembic upgrade head
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+      - run: pytest -q -m integration tests/integration
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg2://ci:ci@localhost:5432/realestate_test
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Scan the full history; --redact keeps any finding's value out of the log.
+      - run: >-
+          docker run --rm -v "$PWD:/repo" --entrypoint sh
+          ghcr.io/gitleaks/gitleaks:v8.18.4 -c
+          "git config --global --add safe.directory /repo &&
+          gitleaks detect --source /repo --log-opts=--all --redact --no-banner -v"
