@@ -238,11 +238,34 @@ Snapshot listing history:
 python -m app.transforms.snapshot_listings
 ```
 
-Detect and send price-drop alerts:
+Queue alerts, then deliver them from the outbox. Queueing never sends Slack
+messages; potential-deal alerts are queued only by their explicit command and
+are not part of `app.run_pipeline`:
 
 ```powershell
-python -m app.alerts.send_price_drop_alerts
+python -m app.alerts.queue_price_drop_alerts
+python -m app.alerts.send_potential_deal_alerts
+python -m app.alerts.process_alert_outbox --dry-run
+python -m app.alerts.process_alert_outbox --test-channel
+python -m app.alerts.process_alert_outbox
 ```
+
+`--dry-run` prints the formatted messages for due alerts. `--test-channel` sends
+them to `SLACK_TEST_WEBHOOK_URL` only. Neither mode reads the production webhook
+or changes the outbox, so previewed alerts stay pending for real delivery.
+
+The worker sends at most about one message per second. Failed sends are
+classified:
+
+- **Timeouts and HTTP 5xx:** retried with jittered exponential backoff
+  (30 seconds to an hour) for up to five attempts.
+- **HTTP 429:** retried no sooner than Slack's `Retry-After`, and never counts
+  toward the attempt limit. The run stops so the remaining alerts wait.
+- **Malformed or oversized payloads:** permanent failures, and other alerts
+  continue.
+- **Revoked, missing, or archived webhooks:** mark the current alert as
+  permanently failed and stop the run, so the remaining alerts are not burned on
+  a broken webhook. Permanent failures make `/health` report `degraded`.
 
 Run the full pipeline:
 

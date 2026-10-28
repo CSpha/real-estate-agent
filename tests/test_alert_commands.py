@@ -1,5 +1,19 @@
 from app.alerts import process_alert_outbox as worker_module
 from app.alerts import queue_price_drop_alerts as queue_module
+from app.alerts import send_potential_deal_alerts as potential_deal_module
+
+
+def test_potential_deal_command_only_enqueues(monkeypatch):
+    monkeypatch.setattr(
+        potential_deal_module,
+        "enqueue_potential_deal_events",
+        lambda engine=None: 3,
+    )
+    sent = []
+    monkeypatch.setattr("app.alerts.slack.send_to_slack", lambda *a, **k: sent.append(a))
+
+    potential_deal_module.main()
+    assert sent == []
 
 
 def test_queue_command_only_enqueues(monkeypatch):
@@ -31,5 +45,5 @@ def test_worker_only_delivers_existing_outbox_rows(monkeypatch):
         "failed": 1,
     }
     assert calls[0][0] == "https://example.test"
-    assert calls[0][1] == {"price_drop"}
+    assert calls[0][1] == {"price_drop", "potential_deal"}
     assert calls[0][4] == 25

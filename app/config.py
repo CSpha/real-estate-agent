@@ -22,6 +22,7 @@ class Settings:
     db_password: str | None
     slack_webhook_url: str | None
     rentcast_api_key: str | None
+    slack_test_webhook_url: str | None = None
 
     @property
     def sqlalchemy_database_url(self) -> str:
@@ -63,6 +64,7 @@ def get_settings() -> Settings:
         db_password=os.getenv("DB_PASSWORD", os.getenv("POSTGRES_PASSWORD")),
         slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL"),
         rentcast_api_key=os.getenv("RENTCAST_API_KEY"),
+        slack_test_webhook_url=os.getenv("SLACK_TEST_WEBHOOK_URL"),
     )
 
 
