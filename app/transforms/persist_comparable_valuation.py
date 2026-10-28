@@ -23,6 +23,7 @@ from app.market.deal_score_v2 import (
     calculate_listing_opportunity_component,
     calculate_market_momentum_component,
 )
+from app.market.deal_score_policy import load_active_policy
 
 
 VALUATION_INSERT_SQL = text(
@@ -347,8 +348,8 @@ def persist_comparable_valuation(
         "confidence_label": valuation["confidence_label"],
         "calculation_json": calculation_json,
     }
-    discount_component = calculate_comparable_discount_component(valuation)
     with engine.connect() as connection:
+        policy = load_active_policy(connection)
         price_history = [
             dict(row)
             for row in connection.execute(
@@ -407,9 +408,11 @@ def persist_comparable_valuation(
             .mappings()
             .one_or_none()
         )
+    discount_component = calculate_comparable_discount_component(valuation, policy=policy)
     opportunity_component = calculate_listing_opportunity_component(
         price_history,
         as_of_date=valuation["as_of_date"],
+        policy=policy,
     )
     days_on_market_component = calculate_days_on_market_component(
         subject_days_on_market=(listing_dom["days_on_market"] if listing_dom else None),
@@ -422,10 +425,12 @@ def persist_comparable_valuation(
         county_name=county_dom["county_name"] if county_dom else None,
         market_period_date=county_dom["period_date"] if county_dom else None,
         as_of_date=valuation["as_of_date"],
+        policy=policy,
     )
     market_momentum_component = calculate_market_momentum_component(
         county_market_history,
         as_of_date=valuation["as_of_date"],
+        policy=policy,
     )
     liquidity_inventory_component = calculate_liquidity_inventory_component(
         homes_sold=county_liquidity["homes_sold"] if county_liquidity else None,
@@ -438,6 +443,7 @@ def persist_comparable_valuation(
             county_liquidity["period_date"] if county_liquidity else None
         ),
         as_of_date=valuation["as_of_date"],
+        policy=policy,
     )
     substantive_components = [
         discount_component,

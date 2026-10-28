@@ -111,6 +111,9 @@ def run_shadow_pipeline(
         if not skip_redfin:
             details["redfin"] = asdict(load_redfin_county_sales(engine=engine))
         if not skip_rentcast:
+            # Recorded before the sync so failed attempts count against the
+            # scheduler's RentCast request budget.
+            details["rentcast_requested"] = True
             details["rentcast"] = asdict(sync_rentcast_shadow(engine=engine))
         if not skip_comparables:
             details["wayne_comparables"] = asdict(

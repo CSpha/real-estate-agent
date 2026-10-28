@@ -1,22 +1,179 @@
 import json
+import logging
 import os
-from datetime import date, datetime
+import time
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.db import get_connection
 from app.analyst import create_analysis
+from app.dashboard.data import build_dashboard_data
 from app.searches.router import router as saved_searches_router
 from app.utils.db import get_engine
+from app.api_security import rate_limiter, require_api_token
 
 
 app = FastAPI(title="Real Estate Agent API")
 app.include_router(saved_searches_router)
+DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+app.mount(
+    "/dashboard-assets",
+    StaticFiles(directory=DASHBOARD_DIR),
+    name="dashboard-assets",
+)
+
+request_logger = logging.getLogger("real_estate_agent.request")
+if not request_logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    request_logger.addHandler(handler)
+request_logger.setLevel(os.getenv("LOG_LEVEL", "INFO").upper())
+request_logger.propagate = False
+
+
+@app.middleware("http")
+async def protect_and_log_requests(request: Request, call_next):
+    started = time.perf_counter()
+    client = request.client.host if request.client else "unknown"
+    try:
+        require_api_token(request)
+        if request.url.path not in {"/health", "/dashboard-assets"} and not rate_limiter.allow(client):
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        response = await call_next(request)
+    except HTTPException as exc:
+        from fastapi.responses import JSONResponse
+
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    request_logger.info(
+        json.dumps(
+            {
+                "event": "http_request",
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                "client": client,
+            }
+        )
+    )
+    return response
+
+
+SHADOW_HEALTH_SQL = text(
+    """
+    SELECT
+        (SELECT finished_at
+         FROM shadow_pipeline_runs
+         WHERE source = 'rentcast' AND status = 'succeeded'
+         ORDER BY finished_at DESC NULLS LAST, id DESC
+         LIMIT 1) AS last_successful_run_at,
+        (SELECT status
+         FROM shadow_pipeline_runs
+         WHERE source = 'rentcast'
+         ORDER BY started_at DESC, id DESC
+         LIMIT 1) AS latest_status,
+        (SELECT COALESCE(finished_at, started_at)
+         FROM shadow_pipeline_runs
+         WHERE source = 'rentcast'
+         ORDER BY started_at DESC, id DESC
+         LIMIT 1) AS latest_run_at,
+        (SELECT COUNT(*)
+         FROM shadow_pipeline_runs
+         WHERE source = 'rentcast' AND status = 'failed'
+           AND COALESCE(finished_at, started_at) >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+        ) AS recent_failure_count
+        ,(SELECT COUNT(*) FROM alert_outbox
+          WHERE status IN ('pending', 'processing', 'retryable_failed')) AS alert_backlog_count
+        ,(SELECT COUNT(*) FROM alert_outbox
+          WHERE status = 'permanent_failed') AS permanent_alert_failure_count
+    """
+)
+
+SHADOW_FAILURES_SQL = text(
+    """
+    SELECT id, started_at, finished_at
+    FROM shadow_pipeline_runs
+    WHERE source = 'rentcast' AND status = 'failed'
+      AND COALESCE(finished_at, started_at) >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+    ORDER BY COALESCE(finished_at, started_at) DESC, id DESC
+    LIMIT 5
+    """
+)
+
+
+def _shadow_schedule_hours(name: str, default: int, minimum: int = 0) -> int:
+    """Read scheduler timing without allowing malformed health configuration."""
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+def _shadow_health(conn, now: datetime) -> dict[str, Any]:
+    summary = conn.execute(SHADOW_HEALTH_SQL).mappings().one()
+    last_success = summary["last_successful_run_at"]
+    if last_success is not None:
+        if last_success.tzinfo is None:
+            last_success = last_success.replace(tzinfo=timezone.utc)
+        age_seconds = max(0, int((now - last_success).total_seconds()))
+        freshness = (
+            "fresh"
+            if age_seconds
+            <= (
+                _shadow_schedule_hours("SHADOW_INTERVAL_HOURS", 72, 1)
+                + _shadow_schedule_hours("SHADOW_RETRY_HOURS", 6, 1)
+            )
+            * 3600
+            else "stale"
+        )
+    else:
+        age_seconds = None
+        freshness = "unknown"
+
+    latest_at = summary["latest_run_at"]
+    if latest_at is not None:
+        if latest_at.tzinfo is None:
+            latest_at = latest_at.replace(tzinfo=timezone.utc)
+        delay_hours = (
+            _shadow_schedule_hours("SHADOW_INTERVAL_HOURS", 72, 1)
+            if summary["latest_status"] == "succeeded"
+            else _shadow_schedule_hours("SHADOW_RETRY_HOURS", 6, 1)
+        )
+        next_run = latest_at + timedelta(hours=delay_hours)
+    else:
+        next_run = None
+
+    failures = [
+        {
+            "id": row["id"],
+            "started_at": serialize_value(row["started_at"]),
+            "finished_at": serialize_value(row["finished_at"]),
+        }
+        for row in conn.execute(SHADOW_FAILURES_SQL).mappings().all()
+    ]
+    return {
+        "last_successful_run_at": serialize_value(last_success),
+        "last_successful_run_age_seconds": age_seconds,
+        "next_run_at": serialize_value(next_run),
+        "latest_status": summary["latest_status"],
+        "recent_failure_count": int(summary["recent_failure_count"] or 0),
+        "alert_backlog_count": int(summary.get("alert_backlog_count") or 0),
+        "permanent_alert_failure_count": int(
+            summary.get("permanent_alert_failure_count") or 0
+        ),
+        "recent_failures": failures,
+        "freshness": freshness,
+    }
 
 
 def analyst_feature_enabled() -> bool:
@@ -32,17 +189,41 @@ def root():
     return {"message": "Real Estate Agent API is running"}
 
 
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    return FileResponse(DASHBOARD_DIR / "index.html")
+
+
+@app.get("/dashboard/data", include_in_schema=False)
+def dashboard_data():
+    try:
+        return build_dashboard_data(engine=get_engine())
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Dashboard data is unavailable",
+        ) from exc
+
+
 @app.get("/health")
 def health_check():
+    now = datetime.now(timezone.utc)
     try:
         with get_engine().connect() as conn:
             conn.execute(text("SELECT 1"))
+            shadow = _shadow_health(conn, now)
     except (SQLAlchemyError, ValueError) as exc:
         raise HTTPException(
             status_code=503,
             detail="Database is unavailable",
         ) from exc
-    return {"status": "ok", "database": "connected"}
+    status = (
+        "ok"
+        if shadow["freshness"] == "fresh"
+        and shadow["permanent_alert_failure_count"] == 0
+        else "degraded"
+    )
+    return {"status": status, "database": "connected", "shadow_pipeline": shadow}
 
 
 class Listing(BaseModel):
@@ -240,17 +421,21 @@ def run_scoring(limit: int = Query(100, ge=1, le=1000)):
 
     return [row_to_dict(row) for row in results]
 
+
 @app.get("/listings/{listing_id}")
 def get_listing(listing_id: int):
     conn = get_connection()
 
     try:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT *
                 FROM listings_current
                 WHERE id = %s;
-            """, (listing_id,))
+            """,
+                (listing_id,),
+            )
 
             row = cur.fetchone()
 
@@ -260,6 +445,7 @@ def get_listing(listing_id: int):
             return row
     finally:
         conn.close()
+
 
 @app.get("/alerts", response_model=List[AlertRecord])
 def list_alerts(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
@@ -315,18 +501,23 @@ def analyze_listing(source: str, source_listing_id: str, request: AnalysisReques
 
 
 @app.get("/listings/{source}/{source_listing_id}/analyses")
-def list_analyses(source: str, source_listing_id: str, limit: int = Query(20, ge=1, le=100)):
+def list_analyses(
+    source: str, source_listing_id: str, limit: int = Query(20, ge=1, le=100)
+):
     if not analyst_feature_enabled():
         raise HTTPException(status_code=404, detail="Analyst feature is disabled")
 
     with get_engine().connect() as conn:
-        rows = conn.execute(text("""
+        rows = conn.execute(
+            text("""
             SELECT id, source, source_listing_id, model, prompt_version,
                    evidence_json AS evidence, analysis_json AS analysis, created_at
             FROM investment_analyses
             WHERE source = :source AND source_listing_id = :listing_id
             ORDER BY created_at DESC LIMIT :limit
-        """), {"source": source, "listing_id": source_listing_id, "limit": limit}).all()
+        """),
+            {"source": source, "listing_id": source_listing_id, "limit": limit},
+        ).all()
     return [row_to_dict(row) for row in rows]
 
 
@@ -336,22 +527,39 @@ def review_analysis(analysis_id: int, request: AnalysisReviewRequest):
         raise HTTPException(status_code=404, detail="Analyst feature is disabled")
 
     if request.decision == "corrected" and not request.corrections:
-        raise HTTPException(status_code=422, detail="Corrected reviews require corrections")
+        raise HTTPException(
+            status_code=422, detail="Corrected reviews require corrections"
+        )
     with get_engine().begin() as conn:
-        exists = conn.execute(text("SELECT 1 FROM investment_analyses WHERE id = :id"),
-                              {"id": analysis_id}).first()
+        exists = conn.execute(
+            text("SELECT 1 FROM investment_analyses WHERE id = :id"),
+            {"id": analysis_id},
+        ).first()
         if not exists:
             raise HTTPException(status_code=404, detail="Analysis not found")
-        row = conn.execute(text("""
+        row = conn.execute(
+            text("""
             INSERT INTO investment_analysis_reviews
                 (analysis_id, decision, reviewer, notes, corrections_json)
             VALUES (:analysis_id, :decision, :reviewer, :notes, CAST(:corrections AS JSONB))
             RETURNING id, created_at
-        """), {"analysis_id": analysis_id, "decision": request.decision,
-                "reviewer": request.reviewer, "notes": request.notes,
-                "corrections": json.dumps(request.corrections) if request.corrections else None}).one()
-    return {"id": row.id, "analysis_id": analysis_id, **request.dict(),
-            "created_at": row.created_at}
+        """),
+            {
+                "analysis_id": analysis_id,
+                "decision": request.decision,
+                "reviewer": request.reviewer,
+                "notes": request.notes,
+                "corrections": json.dumps(request.corrections)
+                if request.corrections
+                else None,
+            },
+        ).one()
+    return {
+        "id": row.id,
+        "analysis_id": analysis_id,
+        **request.dict(),
+        "created_at": row.created_at,
+    }
 
 
 @app.get("/analyses/{analysis_id}/reviews")
@@ -360,13 +568,16 @@ def list_analysis_reviews(analysis_id: int):
         raise HTTPException(status_code=404, detail="Analyst feature is disabled")
 
     with get_engine().connect() as conn:
-        rows = conn.execute(text("""
+        rows = conn.execute(
+            text("""
             SELECT id, analysis_id, decision, reviewer, notes,
                    corrections_json AS corrections, created_at
             FROM investment_analysis_reviews
             WHERE analysis_id = :analysis_id
             ORDER BY created_at DESC
-        """), {"analysis_id": analysis_id}).all()
+        """),
+            {"analysis_id": analysis_id},
+        ).all()
     return [row_to_dict(row) for row in rows]
 
 

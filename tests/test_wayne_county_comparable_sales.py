@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from app.ingest.load_wayne_county_comparable_sales import (
     _exclude_bundle_duplicates,
+    _prepare_ingest_error,
     normalize_wayne_sale,
 )
 
@@ -42,22 +43,16 @@ def test_normalizes_single_family_auditor_sale():
 
 
 def test_proxy_rejects_mobile_home_and_implausible_price():
-    assert normalize_wayne_sale(
-        auditor_sale(PPClassCode=560)
-    )["arms_length"] is False
-    assert normalize_wayne_sale(
-        auditor_sale(PPAmount=20000)
-    )["arms_length"] is False
-    assert normalize_wayne_sale(
-        auditor_sale(PPAmount=2_000_000)
-    )["arms_length"] is False
+    assert normalize_wayne_sale(auditor_sale(PPClassCode=560))["arms_length"] is False
+    assert normalize_wayne_sale(auditor_sale(PPAmount=20000))["arms_length"] is False
+    assert (
+        normalize_wayne_sale(auditor_sale(PPAmount=2_000_000))["arms_length"] is False
+    )
 
 
 def test_bundle_keeps_only_largest_improved_parcel():
     first = normalize_wayne_sale(auditor_sale(PPLivingArea=1800))
-    second = normalize_wayne_sale(
-        auditor_sale(Parcel="67-12346.000", PPLivingArea=900)
-    )
+    second = normalize_wayne_sale(auditor_sale(Parcel="67-12346.000", PPLivingArea=900))
     assert _exclude_bundle_duplicates([first, second]) == 1
     assert first["arms_length"] is True
     assert second["arms_length"] is False
@@ -85,3 +80,19 @@ def test_neighboring_postal_city_and_duplicate_address_are_parsed():
     )
     assert record["city"] == "North Lawrence"
     assert record["zip"] == "44666"
+
+
+def test_ingest_error_is_stable_and_does_not_repeat_address_in_message():
+    item = auditor_sale(PPAddress="PRIVATE VALUE WITH INVALID FORMAT")
+    exc = ValueError(
+        "Could not parse Ohio address: 'PRIVATE VALUE WITH INVALID FORMAT'"
+    )
+
+    first = _prepare_ingest_error(item, exc)
+    repeated = _prepare_ingest_error(item, exc)
+
+    assert first == repeated
+    assert first["error_code"] == "invalid_ohio_address"
+    assert first["source_record_id"] == "1"
+    assert "PRIVATE VALUE" not in first["error_message"]
+    assert len(first["payload_hash"]) == 64

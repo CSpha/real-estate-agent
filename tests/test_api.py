@@ -1,8 +1,31 @@
 from fastapi.testclient import TestClient
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.exc import OperationalError
 
 import app.api as api_module
 from app.api import app
+from app.api_security import rate_limiter
+
+
+def test_public_access_mode_requires_a_bearer_token(monkeypatch):
+    rate_limiter.clear()
+    monkeypatch.setenv("API_AUTH_REQUIRED", "true")
+    monkeypatch.setenv("API_AUTH_TOKEN", "test-token")
+
+    assert TestClient(app).get("/").status_code == 401
+    assert TestClient(app).get(
+        "/", headers={"Authorization": "Bearer test-token"}
+    ).status_code == 200
+
+
+def test_rate_limit_returns_429(monkeypatch):
+    rate_limiter.clear()
+    monkeypatch.setenv("API_RATE_LIMIT_PER_MINUTE", "1")
+    client = TestClient(app)
+
+    assert client.get("/").status_code == 200
+    assert client.get("/").status_code == 429
 
 
 def test_root_does_not_require_database():
@@ -54,3 +77,114 @@ def test_health_reports_database_failure_without_details(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Database is unavailable"}
+
+
+def test_health_reports_shadow_freshness_schedule_and_sanitized_failures(monkeypatch):
+    now = datetime.now(timezone.utc)
+    success = now - timedelta(hours=2)
+    failure = now - timedelta(hours=1)
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def mappings(self):
+            return self
+
+        def one(self):
+            return self.value
+
+        def all(self):
+            return self.value
+
+    class Connection:
+        def execute(self, query, *args, **kwargs):
+            sql = str(query)
+            if "SELECT 1" in sql:
+                return Result(None)
+            if "recent_failure_count" in sql:
+                return Result(
+                    {
+                        "last_successful_run_at": success,
+                        "latest_status": "succeeded",
+                        "latest_run_at": success,
+                        "recent_failure_count": 1,
+                    }
+                )
+            return Result(
+                [
+                    {
+                        "id": 7,
+                        "started_at": failure,
+                        "finished_at": failure,
+                    }
+                ]
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        api_module,
+        "get_engine",
+        lambda: type("Engine", (), {"connect": lambda self: Connection()})(),
+    )
+    monkeypatch.setenv("SHADOW_INTERVAL_HOURS", "72")
+
+    response = TestClient(app).get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    shadow = body["shadow_pipeline"]
+    assert shadow["freshness"] == "fresh"
+    assert shadow["last_successful_run_age_seconds"] >= 7190
+    assert shadow["recent_failure_count"] == 1
+    assert shadow["recent_failures"] == [
+        {
+            "id": 7,
+            "started_at": failure.isoformat(),
+            "finished_at": failure.isoformat(),
+        }
+    ]
+    assert shadow["next_run_at"] == (success + timedelta(hours=72)).isoformat()
+
+
+def test_health_marks_missing_shadow_success_as_degraded(monkeypatch):
+    class Result:
+        def mappings(self):
+            return self
+
+        def one(self):
+            return {
+                "last_successful_run_at": None,
+                "latest_status": None,
+                "latest_run_at": None,
+                "recent_failure_count": 0,
+            }
+
+        def all(self):
+            return []
+
+    class Connection:
+        def execute(self, query, *args, **kwargs):
+            return Result()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        api_module,
+        "get_engine",
+        lambda: type("Engine", (), {"connect": lambda self: Connection()})(),
+    )
+    response = TestClient(app).get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["shadow_pipeline"]["freshness"] == "unknown"

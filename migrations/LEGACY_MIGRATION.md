@@ -97,7 +97,9 @@ Validation completed:
 
 The local `.env` now selects `POSTGRES_DB=realestate_dev_20260908`. Both the
 central engine and the legacy/API engine were verified in fresh processes to
-connect to that database. It is at `0014_shadow_pipeline_runs` (head).
+connect to that database. The cutover initially reached
+`0014_shadow_pipeline_runs`; the database was upgraded to `0015_ingest_errors`
+on September 9.
 
 Only PostgreSQL was running and no other source-database sessions were present.
 The eight source tables were locked against writes during the fresh backup,

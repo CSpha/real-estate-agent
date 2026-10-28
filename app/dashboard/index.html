@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Review Wayne County shadow listings, valuations, and pipeline readiness.">
+    <title>Property Signal</title>
+    <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg">
+    <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">PS</span>
+        <div>
+          <strong>Property Signal</strong>
+          <span>Wayne County shadow review</span>
+        </div>
+      </div>
+      <div class="live-state" id="live-state" aria-live="polite">
+        <span class="status-dot"></span>
+        Connecting
+      </div>
+    </header>
+
+    <main>
+      <section class="intro-row">
+        <div>
+          <p class="eyebrow">Operations</p>
+          <h1>Deal review workspace</h1>
+          <p class="lede">Monitor shadow scoring and inspect provisional opportunities before any alert promotion.</p>
+        </div>
+        <p class="guardrail">Shadow mode · Slack alerts disabled</p>
+      </section>
+
+      <section class="metric-grid" aria-label="Pipeline status">
+        <article class="metric-card">
+          <span>Pipeline health</span>
+          <strong id="health-value">Loading</strong>
+          <small id="health-detail">Checking Postgres and run history</small>
+        </article>
+        <article class="metric-card">
+          <span>Last successful run</span>
+          <strong id="last-run-value">—</strong>
+          <small id="last-run-detail">Waiting for status</small>
+        </article>
+        <article class="metric-card">
+          <span>Next expected run</span>
+          <strong id="next-run-value">—</strong>
+          <small>Three-day cadence</small>
+        </article>
+        <article class="metric-card accent-card">
+          <span>Recent failures</span>
+          <strong id="failure-value">—</strong>
+          <small>Past seven days</small>
+        </article>
+      </section>
+
+      <section class="snapshot-grid" aria-label="Listing summary">
+        <article><span>Active listings</span><strong id="listing-count">—</strong></article>
+        <article><span>Complete scores</span><strong id="score-count">—</strong></article>
+        <article><span>Needs review</span><strong id="review-count">—</strong></article>
+        <article><span>Missing area</span><strong id="missing-count">—</strong></article>
+        <article><span>Rent estimates</span><strong id="rent-count">—</strong></article>
+        <article><span>Positive cash flow</span><strong id="cash-flow-count">—</strong></article>
+      </section>
+
+      <section class="readiness-panel" aria-labelledby="readiness-title">
+        <div>
+          <p class="eyebrow">Promotion readiness</p>
+          <h2 id="readiness-title">Observation in progress</h2>
+          <p id="readiness-copy">Loading readiness checks…</p>
+        </div>
+        <div class="readiness-stat"><strong id="observation-days">—</strong><span>of 14 days observed</span></div>
+        <div class="readiness-stat"><strong id="valuation-coverage">—</strong><span>valuation coverage</span></div>
+      </section>
+
+      <section class="workspace" aria-labelledby="listings-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">Listings</p><h2 id="listings-title">Scored opportunities</h2></div>
+          <p id="result-count" aria-live="polite">Loading listings…</p>
+        </div>
+        <div class="filters" role="search">
+          <label class="search-field"><span>Search</span><input id="search-input" type="search" placeholder="Address, city, or listing ID"></label>
+          <label><span>City</span><select id="city-filter"><option value="">All cities</option></select></label>
+          <label><span>Confidence</span><select id="confidence-filter">
+            <option value="">All confidence</option><option value="high">High</option>
+            <option value="medium">Medium</option><option value="low">Low</option>
+            <option value="very_low">Very low</option><option value="unavailable">Unavailable</option>
+          </select></label>
+          <label><span>Sort</span><select id="sort-select">
+            <option value="score">Deal score</option><option value="discount">Estimated discount</option>
+            <option value="cash_flow">Monthly cash flow</option><option value="gross_yield">Gross rent yield</option>
+            <option value="price">Lowest price</option><option value="dom">Days on market</option>
+          </select></label>
+          <label><span>Rental</span><select id="rental-filter">
+            <option value="">All listings</option><option value="estimated">Rent estimated</option>
+            <option value="positive">Positive cash flow</option><option value="dscr">DSCR constrained</option>
+          </select></label>
+          <label class="review-toggle"><input id="review-filter" type="checkbox"><span>Needs review only</span></label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Property</th><th>Price</th><th>Deal score</th><th>Est. discount</th><th>Rent</th><th>Cash flow</th><th>DSCR loan</th><th>Confidence</th><th>Days listed</th><th>Review</th></tr></thead>
+            <tbody id="listing-rows"></tbody>
+          </table>
+          <div class="empty-state" id="empty-state" hidden>No listings match these filters.</div>
+        </div>
+      </section>
+
+      <section class="run-history" aria-labelledby="runs-title">
+        <div class="section-heading"><div><p class="eyebrow">History</p><h2 id="runs-title">Shadow runs</h2></div></div>
+        <div id="run-list" class="run-list"></div>
+      </section>
+    </main>
+
+    <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+    <aside class="detail-drawer" id="detail-drawer" aria-labelledby="detail-title" aria-hidden="true">
+      <button class="drawer-close" id="drawer-close" type="button" aria-label="Close listing details">×</button>
+      <div id="detail-content"></div>
+    </aside>
+
+    <script src="/dashboard-assets/dashboard.js" defer></script>
+  </body>
+</html>

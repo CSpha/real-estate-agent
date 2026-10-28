@@ -142,11 +142,21 @@ value, and bundled-parcel suppression. Keep these valuations in shadow review
 until a machine-readable valid-sales export or licensed closed-sale feed can
 confirm transactions.
 
+Supported-class auditor records that cannot be normalized are stored once in
+`ingest_errors`, keyed by their payload fingerprint and stable error code. The
+raw JSON remains available for internal diagnosis while routine output exposes
+only aggregate reasons. Review them with:
+
+```powershell
+python -m app.reports.ingest_errors `
+  --source wayne_county_auditor_arcgis_provisional
+```
+
 The review writes `data/shadow_scoring_review.csv` (ignored by Git) with every
 listing's market context, comparable result, review score, property type, price,
 square footage, days on market, missing fields, and policy decision.
 
-Run the dedicated pipeline once, or start its weekly Docker scheduler:
+Run the dedicated pipeline once, or start its three-day Docker scheduler:
 
 ```powershell
 python -m app.shadow.run_pipeline
@@ -155,13 +165,25 @@ python -m app.shadow.readiness
 ```
 
 The shadow runner has no Slack webhook in its container environment and imports
-no alert module. It refreshes Redfin context, RentCast listings, auditor sales,
-valuations, the review report, and `shadow_pipeline_runs`. Promotion remains
-blocked until three successful run dates span at least 14 days, no shadow
-listing has become alert-eligible, and at least 70% of comparable-ready homes
-have supported valuations. The default cadence is seven days and can be changed
-with `SHADOW_INTERVAL_HOURS`. Set `SHADOW_INITIAL_DELAY_HOURS` when recreating a
-runner immediately after a manual run to avoid consuming another provider call.
+no alert module. Scheduled runs do not call RentCast by default, so they reuse
+the listings and rent estimates already stored in Postgres while refreshing
+Redfin context, auditor sales, valuations, the review report, and
+`shadow_pipeline_runs`. Scheduled RentCast listing refreshes require an
+explicit `SHADOW_ENABLE_RENTCAST_API_CALLS=true` opt-in. Each refresh makes one
+request per pilot city (three in total). A request budget then applies: RentCast is
+skipped when listings were requested within `SHADOW_RENTCAST_MIN_HOURS`
+(default 60), so failure retries do not re-fetch, or when the run would exceed
+`SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT` (default 40) in the current UTC calendar
+month. The budget counts only scheduled and manual shadow-pipeline runs; leave
+headroom for audits and standalone syncs. A skipped run still refreshes the other
+sources. Promotion remains
+blocked until three successful run dates span at least 14 days, each of the
+latest three run dates synced RentCast listings, no shadow listing has become
+alert-eligible, and at least 70% of comparable-ready homes have supported
+valuations. The default cadence is three days and can be changed
+with `SHADOW_INTERVAL_HOURS`. The next deadline is recovered from persisted run history, including manual runs.
+`SHADOW_INITIAL_DELAY_HOURS` applies only before any run history exists; its
+initial deadline is persisted under the mounted data directory.
 
 The shadow service persists its generated CSV under
 `data/shadow-runner/shadow_scoring_review.csv` on the host. Manual review commands
@@ -170,9 +192,11 @@ by Git. View scheduler activity with
 `docker compose --profile shadow logs --tail 50 shadow-runner`, and stop it with
 `docker compose --profile shadow stop shadow-runner`.
 
-The scheduler waits 168 hours after each successful run and retries failures
-after 6 hours by default. Its initial delay applies on every process restart;
-it is not a fixed wall-clock appointment. Docker Desktop and the host must stay
+The scheduler runs 72 hours after each successful completion and retries failures
+after 6 hours by default. Restarts preserve the deadline; an overdue attempt
+runs on startup. An interrupted run is retried six hours after its start.
+The 14-day readiness window starts at the first successful run; valuation
+coverage is checked across the latest three successful run dates. Docker Desktop and the host must stay
 running for scheduled work to execute.
 
 Load real monthly Wayne County market context from Redfin, then refresh the
@@ -231,6 +255,53 @@ Run the API:
 ```powershell
 python -m app.api
 ```
+
+Reviewed exact-match Auditor living-area evidence is stored separately before it
+updates a missing current-listing field. This preserves the provider history and
+records the parcel, matching method, review basis, and source payload fingerprint:
+
+```powershell
+python -m app.transforms.apply_auditor_sqft_candidates
+```
+
+With the API running, open `http://127.0.0.1:8000/dashboard` to use the local
+Property Signal dashboard. It shows pipeline health, shadow-promotion readiness,
+recent runs, and the current listing scores from Postgres. Listings can be
+searched, filtered, sorted, and opened to inspect their valuation evidence and
+score components. The dashboard is read-only and clearly marks the data as
+provisional; it does not enable alerts or change listing records.
+
+## Rental estimates and DSCR underwriting
+
+Apply the rental-underwriting schema, then run a bounded RentCast long-term rent
+estimate refresh:
+
+```powershell
+python -m alembic upgrade head
+python -m app.transforms.sync_rent_estimates --max-requests 25
+```
+
+The command skips unchanged estimates that are less than 30 days old and caps
+new successful RentCast requests at 25 per invocation. This cap matters because
+RentCast counts each successful property AVM request against the account's
+monthly allowance and may charge overages. It prints aggregate results without
+printing addresses or API response bodies.
+
+Each immutable rent estimate stores the request inputs, estimate range, rental
+comparables, provider response, analysis date, and input fingerprint. Its linked
+rental analysis stores a reproducible acquisition scenario with monthly cash
+flow, gross yield, cap rate, and loan sizing.
+
+The initial DSCR target is 1.25 with a 75% maximum LTV and 30-year amortization.
+The assumed DSCR interest rate is the latest stored Freddie Mac 30-year PMMS
+benchmark plus 1.50 percentage points, falling back to 8.00% when no benchmark
+is available. This is a screening assumption rather than a lender quote.
+Property tax is estimated at 1.50% of purchase price annually, insurance at
+0.50%, vacancy at 5%, management at 8%, maintenance at 8%, capital reserves at
+5%, and HOA at zero. The analysis sizes the target loan to the lower of the LTV
+cap or the loan supported by gross monthly rent divided by monthly PITIA at the
+target DSCR. The dashboard exposes the constraint, loan amount, down payment,
+PITIA, minimum qualifying rent, and all assumptions for review.
 
 ## Comparable valuation and Deal Score v2
 
@@ -310,3 +381,65 @@ evidence is reused while backfilled or changed history produces a new auditable
 component. The Deal Score v2 calculation and persistence model is used by the
 dedicated shadow pipeline and review report. It is still isolated from
 saved-search and alert logic; promotion remains a separate, gated decision.
+
+### Deal Score threshold policies
+
+`deal_score_policies` holds versioned threshold sets. The initial active policy,
+`deal-score-thresholds-v1`, preserves the thresholds documented above. Each
+component records its policy version and thresholds in its immutable calculation
+JSON, so a future policy produces new component and aggregate fingerprints while
+leaving earlier results reproducible. There can be only one active policy.
+Create and review a new policy row before switching it active; after a change,
+run the valuation backfill to publish scores calculated under that policy.
+
+Use `python -m app.transforms.manage_deal_score_policy --show-active` to inspect
+the live policy. To make a reviewed JSON threshold file available, run
+`--create policy-name --thresholds-file policy.json`; activate it separately with
+`--activate policy-name`. Creation validates the complete threshold schema and
+activation is transactional, so there is always one active policy.
+
+## Database availability
+
+Postgres uses `restart: unless-stopped`, also applied to the existing container
+without interrupting it. Docker restarts it after a crash or daemon restart
+unless it was explicitly stopped. Docker Desktop must still be running; an
+intentional `docker stop` requires starting the container again. This is not a
+host startup or power-management setting.
+
+## Operational health and backups
+
+Before exposing the API outside the local machine, set `API_AUTH_REQUIRED=true`
+and a long random `API_AUTH_TOKEN`. Requests then require
+`Authorization: Bearer <token>`; `/health` remains available to a monitoring
+system. `API_RATE_LIMIT_PER_MINUTE` caps requests per process and client IP,
+with a default of 120. API request logs are structured JSON and omit tokens and
+query strings.
+Docker also monitors the API with a local `/health` check and marks the
+container unhealthy after repeated failures. Compose restart policies act only
+when a process exits, so an unhealthy API is reported but not restarted.
+The shadow-runner has its own deadline check: if its latest run passes the
+scheduled interval (or failure-retry interval) by 15 minutes, Docker marks it
+unhealthy. An in-process watchdog runs the same check every five minutes and,
+after two consecutive misses, exits the scheduler so `restart: unless-stopped`
+starts a fresh one that recovers its deadline from run history. A run that
+lasts longer than the retry interval plus grace is treated as hung.
+
+`GET /health` reports database connectivity and shadow-pipeline history: last
+successful completion, its age in seconds, expected next attempt, latest run
+status, and up to five failure timestamps from the last seven days. It reports
+`degraded` for missing or stale history; freshness allows the configured
+72-hour interval plus a 6-hour retry grace period. Database failures return 503.
+A successful run timestamp is a freshness proxy, not a scheduler heartbeat or
+proof that every provider record is current. The next run is unknown until
+history exists. Local Docker API access is at `http://127.0.0.1:8000/health`.
+The endpoint also reports pending/retryable alert backlog and permanent alert
+failures; permanent failures make health `degraded`.
+
+The `backup` Compose profile now includes `backup-verify`. It restores the newest
+completed dump into a disposable `*_test` database, compares schema metadata and
+row counts with the source, then removes that database. It runs weekly by default
+and retries failures hourly. Start the profile with `docker compose --profile backup up -d`.
+
+Daily backups and isolated restore verification are described in
+[Postgres backups](docs/postgres-backups.md). The first backup is immediate;
+subsequent backups preserve their 24-hour deadline across restarts.

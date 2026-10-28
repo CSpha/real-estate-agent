@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: ruff check app tests scripts migrations
+      - run: pytest -q tests --ignore=tests/integration
+      # Compose requires these secrets; placeholders let CI validate the file.
+      - run: docker compose --profile shadow --profile backup config --quiet
+        env:
+          # Some Compose versions evaluate the nested POSTGRES_PASSWORD
+          # fallback even when DB_PASSWORD is set, so provide both.
+          DB_PASSWORD: ci-placeholder
+          POSTGRES_PASSWORD: ci-placeholder
+          RENTCAST_API_KEY: ci-placeholder
