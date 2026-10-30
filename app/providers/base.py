@@ -11,6 +11,9 @@ class ProviderSyncResult:
     updated_count: int
     skipped_count: int
     errors: list[str]
+    pages: int = 0
+    quarantined_count: int = 0
+    resumed_from: str | None = None
 
 
 class ProviderAdapter(Protocol):

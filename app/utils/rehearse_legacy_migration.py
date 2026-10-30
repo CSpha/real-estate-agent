@@ -55,13 +55,6 @@ def rehearse(engine: Engine, *, legacy_timezone: str) -> dict:
         config = Config(str(PROJECT_ROOT / "alembic.ini"))
         config.attributes["connection"] = conn
         command.upgrade(config, "head")
-        # Provider state is currently managed by app.providers.sync, not Alembic.
-        conn.execute(
-            text(
-                "CREATE TABLE public.provider_sync_state "
-                "(LIKE legacy_archive.provider_sync_state INCLUDING ALL)"
-            )
-        )
         # Replace migration seed rows with the original lookup, preserving IDs.
         conn.execute(text("DELETE FROM public.city_county_lookup"))
         copy_sql = (PROJECT_ROOT / "sql" / "reconcile_legacy_copy.sql").read_text()

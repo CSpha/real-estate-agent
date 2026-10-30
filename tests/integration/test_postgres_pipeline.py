@@ -35,7 +35,7 @@ from app.ingest.load_redfin_county_sales import (
     REDFIN_SOURCE_FILE,
     upsert_redfin_county_sales,
 )
-from app.ingest.load_sample_listings import load_sample_csv
+from app.ingest.load_sample_listings import ingest_records, load_sample_csv
 from app.ingest.load_wayne_county_comparable_sales import (
     import_wayne_county_comparable_sales,
 )
@@ -52,6 +52,9 @@ from app.market.mortgage_rate_outlook_v2 import (
 )
 from app.market.mortgage_rates import get_rate_trend, load_pmms_csv
 from app.providers.rentcast_rent import RentEstimate
+from app.providers.fixture import FixtureProvider
+from app.providers.sync import sync_provider
+from app.providers.sync_rentcast_shadow import mark_feed_presence
 from app.reports.ingest_errors import summarize_ingest_errors
 from app.searches.models import (
     SavedSearchCreate,
@@ -1654,3 +1657,137 @@ def test_rate_limited_alert_waits_for_retry_after(postgres_engine):
         ).one()
     assert row.status == "retryable_failed"
     assert row.wait >= 590
+
+
+def _provider_listing(source: str, listing_id: str, **overrides) -> dict:
+    record = {
+        "source": source,
+        "source_listing_id": listing_id,
+        "address": f"{listing_id} Feed St",
+        "city": "Wooster",
+        "state": "OH",
+        "zip": "44691",
+        "list_price": 200000,
+        "beds": 3,
+        "baths": 2,
+        "sqft": 1500,
+        "property_type": "SingleFamilyResidence",
+        "status": "Active",
+        "days_on_market": 10,
+        "first_seen_date": "2026-10-01",
+        "last_seen_date": "2026-10-20",
+        "price_per_sqft": Decimal("133.33"),
+    }
+    record.update(overrides)
+    return record
+
+
+class _InterruptedFixture(FixtureProvider):
+    name = "fixture:interrupted"
+
+    def __init__(self, records):
+        super().__init__(records, page_size=2)
+        self.fail_at: str | None = "2"
+
+    def fetch_updated_since(self, cursor=None):
+        if cursor == self.fail_at:
+            self.fail_at = None
+            raise TimeoutError("provider timed out")
+        return super().fetch_updated_since(cursor)
+
+
+def test_provider_sync_resumes_and_quarantines_on_postgres(postgres_engine):
+    records = [_provider_listing("sync_test", f"sync-{index}") for index in range(3)]
+    records.append(_provider_listing("sync_test", "sync-bad", list_price="n/a"))
+    records.append(_provider_listing("sync_test", ""))
+    provider = _InterruptedFixture(records)
+    try:
+        with pytest.raises(TimeoutError):
+            sync_provider(provider, engine=postgres_engine)
+        with postgres_engine.connect() as conn:
+            failed = conn.execute(
+                text(
+                    "SELECT * FROM provider_sync_state WHERE provider_name = :name"
+                ),
+                {"name": provider.name},
+            ).one()
+        assert failed.last_status == "failed"
+        assert failed.last_cursor == "2"
+        assert failed.updated_at.tzinfo is not None
+
+        result = sync_provider(provider, engine=postgres_engine)
+
+        assert result.resumed_from == "2"
+        assert result.quarantined_count == 2
+        with postgres_engine.connect() as conn:
+            listing_ids = conn.execute(
+                text(
+                    "SELECT source_listing_id FROM listings_current "
+                    "WHERE source = 'sync_test' ORDER BY source_listing_id"
+                )
+            ).scalars().all()
+            state = conn.execute(
+                text(
+                    "SELECT * FROM provider_sync_state WHERE provider_name = :name"
+                ),
+                {"name": provider.name},
+            ).one()
+            error_codes = conn.execute(
+                text(
+                    "SELECT error_code FROM ingest_errors "
+                    "WHERE source = 'fixture:interrupted' ORDER BY error_code"
+                )
+            ).scalars().all()
+        assert listing_ids == ["sync-0", "sync-1", "sync-2"]
+        assert state.last_status == "completed"
+        assert state.last_cursor is None
+        assert state.records_committed == 3
+        assert error_codes == ["invalid_numeric", "missing_identifier"]
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(text("DELETE FROM listings_raw WHERE source = 'sync_test'"))
+            conn.execute(text("DELETE FROM listings_current WHERE source = 'sync_test'"))
+            conn.execute(text("DELETE FROM ingest_errors WHERE source = 'fixture:interrupted'"))
+            conn.execute(text("DELETE FROM provider_sync_state"))
+
+
+def test_feed_presence_marks_and_clears_missing_listings(postgres_engine):
+    ids = [f"feed-{index}" for index in range(6)]
+    ingest_records(
+        [_provider_listing("rentcast", listing_id) for listing_id in ids]
+        + [_provider_listing("rentcast", "feed-akron", city="Akron")],
+        engine=postgres_engine,
+        alert_eligible=False,
+    )
+
+    def missing() -> list[str]:
+        with postgres_engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "SELECT source_listing_id FROM listings_current "
+                    "WHERE source = 'rentcast' "
+                    "AND missing_from_feed_since IS NOT NULL "
+                    "ORDER BY source_listing_id"
+                )
+            ).scalars().all()
+
+    try:
+        first = mark_feed_presence(postgres_engine, set(ids[:5]))
+        assert first.newly_missing_count == 1
+        assert missing() == ["feed-5"]
+
+        repeat = mark_feed_presence(postgres_engine, set(ids[:5]))
+        assert repeat.newly_missing_count == 0
+
+        returned = mark_feed_presence(postgres_engine, set(ids))
+        assert returned.returned_count == 1
+        assert missing() == []
+
+        shrunk = mark_feed_presence(postgres_engine, {"feed-0", "feed-new"})
+        assert shrunk.skipped_reason is not None
+        assert shrunk.newly_missing_count == 0
+        assert missing() == []
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(text("DELETE FROM listings_raw WHERE source = 'rentcast'"))
+            conn.execute(text("DELETE FROM listings_current WHERE source = 'rentcast'"))

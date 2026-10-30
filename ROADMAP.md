@@ -18,17 +18,22 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 | Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI |
 | Alert promotion | **Blocked**: readiness passes, but listing freshness, transaction validity, and flagged-listing evidence are outstanding |
 
-Latest schema revision: `0019_deal_score_policies`.
+Latest schema revision: `0021_listing_feed_presence`.
 
 ## Current capabilities
 
 Data and ingestion
 
-- One authoritative Alembic-managed PostgreSQL schema (19 revisions)
+- One authoritative Alembic-managed PostgreSQL schema (21 revisions)
 - Immutable raw JSON payloads with content hashes and normalized current listings
 - Idempotent sample ingestion and change-aware listing history
 - RentCast active-sale-listing adapter with bounded pagination, secret-header
-  authentication, and a read-only coverage audit
+  authentication, bounded retries (timeouts, 429 with `Retry-After`, 5xx),
+  per-sync request counts, and a read-only coverage audit
+- Generic provider sync that commits page by page, stores its cursor in the
+  Alembic-managed `provider_sync_state`, and resumes recent interrupted runs
+- Feed-presence tracking: pilot listings absent from a complete RentCast sync get
+  `missing_from_feed_since` without losing rows or history
 - Wayne County RentCast shadow sync with persistent alert isolation, explicit
   single-family/condo/townhouse automation rules, review-only manufactured and
   multifamily records, land exclusion, and neutral handling of missing square footage
@@ -36,7 +41,7 @@ Data and ingestion
   inventory, new listings, market velocity)
 - 24-month Wayne County Auditor ArcGIS comparable-sales importer with a
   conservative arm's-length proxy, parcel-bundle suppression, and provisional-source labeling
-- `ingest_errors` quarantine for supported-class auditor records that cannot be
+- `ingest_errors` quarantine for auditor and RentCast records that cannot be
   normalized, keyed by payload fingerprint and error code
 - Source-tracked property-attribute evidence (`listing_property_attribute_evidence`);
   reviewed exact-match auditor living area can fill missing listing square footage
@@ -109,10 +114,10 @@ Operations
    month against the plan's 50), and readiness now requires each of the latest
    three run dates to include a successful RentCast sync. Readiness is
    correctly not ready again until three fresh observations accumulate.
-4. **`provider_sync_state` is created at runtime.** `app/providers/sync.py`
-   issues its own `CREATE TABLE` instead of using an Alembic revision, and
-   `sync_provider` processes one page per call. Both must be resolved before the
-   generic sync path is used for live ingestion.
+4. **Resolved October 28: `provider_sync_state` was created at runtime.**
+   Revision `0020` now owns the table (adopting existing rows), and
+   `sync_provider` reads every page, saving its cursor only after each page
+   commits.
 5. **Rental scenario assumptions are hard-coded.** Growth rates and the 0.74
    rent-to-cash-flow pass-through in `app/market/rental_forecast.py` are not
    derived from market rent history and are not stored in a policy table.
@@ -157,8 +162,8 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 6. Create a Slack test channel webhook, set `SLACK_TEST_WEBHOOK_URL`, and
    validate real messages with `process_alert_outbox --test-channel`. Then
    decide on Block Kit formatting and digest delivery (Phase 4).
-7. Move the generic provider sync to Alembic-managed state with multi-page
-   resumable cursors (known issue 4).
+7. Decide how listings marked `missing_from_feed_since` should be treated in
+   shadow scoring and readiness metrics (they are still scored today).
 8. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
@@ -229,13 +234,17 @@ unless their terms and an explicit agreement authorize it.
 - [x] Track provider listing ID and source
 - [x] Quarantine bad individual records (`ingest_errors`, auditor importer)
 - [x] Record shadow sync runs with start/end time, counts, and failure details (`shadow_pipeline_runs`)
-- [ ] Manage `provider_sync_state` in Alembic and persist cursors only after each page commits
-- [ ] Rate limiting, bounded retries, and exponential backoff for provider requests
+- [x] Manage `provider_sync_state` in Alembic and persist cursors only after each page commits
+- [x] Bounded retries and exponential backoff for provider requests (RentCast:
+      two retries, `Retry-After`, requests counted against the monthly budget)
 - [ ] Incremental retrieval by provider modification timestamp where supported
 - [ ] Track provider modification timestamp, listing URL, photos, and attribution fields
-- [ ] Handle active, coming soon, pending, sold, expired, canceled, withdrawn, and deleted/missing statuses
-- [ ] Detect listings that disappear from the feed without deleting history
-- [ ] Extend quarantine to RentCast listing normalization failures
+- [ ] Handle active, coming soon, pending, sold, expired, canceled, withdrawn,
+      and deleted/missing statuses (status names are normalized; RentCast only
+      reports Active/Inactive, so a full lifecycle needs an MLS feed)
+- [x] Detect listings that disappear from the feed without deleting history
+- [ ] Decide how missing listings affect scoring, readiness, and alerts
+- [x] Extend quarantine to RentCast listing normalization failures
 - [ ] Document licensing, attribution, display, photo, and retention requirements
 
 ### Acceptance criteria
@@ -328,7 +337,6 @@ Implemented: `saved_searches`, `listing_search_evaluations`, `alert_outbox`,
 
 Still needed:
 
-- `provider_sync_state` under Alembic (currently created at runtime)
 - `listing_events` for disappearance and status transitions
 - General `pipeline_runs` covering the sample pipeline and alert worker
 
@@ -466,14 +474,14 @@ Covered today: normalization with provider fixtures, criteria boundaries,
 price-change and fingerprint logic, alert idempotency, repeated-ingestion
 integration, bounded single-page provider fetches, scheduler deadlines, health,
 backups, dry-run alert suppression, Slack 200/429/5xx/4xx classification,
+multi-page provider sync with interrupted-run resume, RentCast retry and
+`Retry-After` handling, record quarantine, feed-presence marking,
 pacing and stop conditions, migration round trips against fresh PostgreSQL in
 CI, and the integration suite in CI.
 
 Still needed:
 
-- Multi-page provider pagination and interrupted-sync resume tests
 - Status-enumeration tests for the full listing lifecycle
-- Provider throttling and retry tests
 - End-to-end dry-run test of the shadow pipeline
 
 ## History
@@ -507,7 +515,10 @@ Still needed:
   CI fixed (Compose check had no credentials) and PR #2 merged. Slack delivery
   hardened and potential deals moved to the outbox; CI gained migration round
   trips, the integration suite, and gitleaks. 214 unit and 25 integration
-  tests passed; the full history has no gitleaks findings.
+  tests passed; the full history has no gitleaks findings. Provider sync
+  hardened: Alembic-managed resumable sync state, RentCast retries with
+  request-count budgeting, RentCast quarantine, and feed-presence tracking
+  (229 unit and 27 integration tests passed).
 
 ## External references
 

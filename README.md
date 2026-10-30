@@ -124,6 +124,28 @@ records. They can be snapshotted and scored, but neither price-drop nor
 potential-deal alert queries can select them. The command also deliberately
 skips saved-search evaluation and alert queueing.
 
+RentCast requests that time out, return HTTP 429, or return 5xx are retried at
+most twice with jittered exponential backoff; a 429 waits for `Retry-After` and
+gives up if that exceeds 60 seconds. Authentication and other 4xx errors are not
+retried. Each sync records the number of requests it made.
+
+A record that cannot be normalized (no stable identifier, an invalid date, or a
+non-numeric value) is stored in `ingest_errors` with source `rentcast` instead
+of failing the batch.
+
+After a complete sync, pilot-city listings that RentCast no longer returns get
+`listings_current.missing_from_feed_since`; their rows and history are kept, and
+the marker clears if a listing reappears. If the feed returns fewer than half the
+known listings, the check is skipped as a probable outage rather than marking
+most listings missing. Missing listings are still scored in shadow review for
+now.
+
+The generic adapter sync (`python -m app.providers.sync --provider rentcast`)
+loads every page and stores its cursor in `provider_sync_state` only after each
+page commits. A failed or interrupted sync resumes from that cursor if it is
+retried within six hours; older state starts over because offset cursors drift
+as listings change. Repeated cursors and more than 100 pages stop the sync.
+
 Import the most recent 24 months of property-level Wayne County sales and run
 the all-listing review:
 
@@ -169,12 +191,15 @@ no alert module. Scheduled runs do not call RentCast by default, so they reuse
 the listings and rent estimates already stored in Postgres while refreshing
 Redfin context, auditor sales, valuations, the review report, and
 `shadow_pipeline_runs`. Scheduled RentCast listing refreshes require an
-explicit `SHADOW_ENABLE_RENTCAST_API_CALLS=true` opt-in. Each refresh makes one
-request per pilot city (three in total). A request budget then applies: RentCast is
+explicit `SHADOW_ENABLE_RENTCAST_API_CALLS=true` opt-in. Each refresh normally
+makes one request per pilot city (three in total), and up to nine if every
+request is retried twice. A request budget then applies: RentCast is
 skipped when listings were requested within `SHADOW_RENTCAST_MIN_HOURS`
 (default 60), so failure retries do not re-fetch, or when the run would exceed
 `SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT` (default 40) in the current UTC calendar
-month. The budget counts only scheduled and manual shadow-pipeline runs; leave
+month. Usage is the recorded request count of each run this month; a run must
+have room for the nine-request worst case before it starts, and a run that failed
+before recording its count is assumed to have used all nine. The budget counts only scheduled and manual shadow-pipeline runs; leave
 headroom for audits and standalone syncs. A skipped run still refreshes the other
 sources. Promotion remains
 blocked until three successful run dates span at least 14 days, each of the
