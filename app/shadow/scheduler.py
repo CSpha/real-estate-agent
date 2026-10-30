@@ -11,17 +11,31 @@ from sqlalchemy import text
 
 from app.db import get_engine
 
+from app.providers.rentcast import DEFAULT_MAX_RETRIES
 from app.providers.sync_rentcast_shadow import PILOT_CITIES
 from app.shadow.health import scheduler_is_healthy
 from app.shadow.run_pipeline import run_shadow_pipeline
 
 
-# One request per pilot city; PILOT_PAGE_SIZE keeps each city to a single page.
+# One page per pilot city at PILOT_PAGE_SIZE. Runs record their actual request
+# count; runs from before that was recorded used one request per city, and a
+# run that failed before recording assumes every allowed retry was spent.
 RENTCAST_REQUESTS_PER_RUN = len(PILOT_CITIES)
+RENTCAST_MAX_REQUESTS_PER_RUN = len(PILOT_CITIES) * (1 + DEFAULT_MAX_RETRIES)
 RENTCAST_USAGE_SQL = text(
     """
     SELECT
-        COUNT(*) FILTER (WHERE started_at >= :month_start) AS attempts_this_month,
+        COALESCE(
+            SUM(
+                CASE
+                    WHEN details_json -> 'rentcast' ? 'request_count'
+                        THEN (details_json -> 'rentcast' ->> 'request_count')::int
+                    WHEN details_json ? 'rentcast' THEN :requests_per_run
+                    ELSE :max_requests_per_run
+                END
+            ) FILTER (WHERE started_at >= :month_start),
+            0
+        ) AS requests_this_month,
         MAX(started_at) AS last_attempt_at
     FROM shadow_pipeline_runs
     WHERE source = 'rentcast'
@@ -53,12 +67,19 @@ def rentcast_budget_allows(*, engine, now: datetime | None = None) -> tuple[bool
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     with engine.connect() as connection:
         row = (
-            connection.execute(RENTCAST_USAGE_SQL, {"month_start": month_start})
+            connection.execute(
+                RENTCAST_USAGE_SQL,
+                {
+                    "month_start": month_start,
+                    "requests_per_run": RENTCAST_REQUESTS_PER_RUN,
+                    "max_requests_per_run": RENTCAST_MAX_REQUESTS_PER_RUN,
+                },
+            )
             .mappings()
             .one()
         )
-    used = int(row["attempts_this_month"] or 0) * RENTCAST_REQUESTS_PER_RUN
-    if used + RENTCAST_REQUESTS_PER_RUN > limit:
+    used = int(row["requests_this_month"] or 0)
+    if used + RENTCAST_MAX_REQUESTS_PER_RUN > limit:
         return False, f"monthly budget reached ({used} of {limit} requests used)"
     last_attempt = row["last_attempt_at"]
     if last_attempt is not None and now - last_attempt < timedelta(hours=min_hours):

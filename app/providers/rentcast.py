@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import random
+import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 import requests
 
@@ -11,6 +13,12 @@ from app.config import get_settings, require_setting
 
 RENTCAST_SALE_LISTINGS_URL = "https://api.rentcast.io/v1/listings/sale"
 RENTCAST_MAX_PAGE_SIZE = 500
+# Each retry is another billable request, so keep this small; see
+# RENTCAST_MAX_REQUESTS_PER_RUN in app.shadow.scheduler.
+DEFAULT_MAX_RETRIES = 2
+RETRY_BASE_SECONDS = 2.0
+MAX_RETRY_AFTER_SECONDS = 60.0
+RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 SQFT_PER_ACRE = Decimal("43560")
 
 
@@ -41,6 +49,9 @@ class RentCastProvider:
         status: str = "Active",
         timeout_seconds: float = 20,
         session: Any | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
     ) -> None:
         if not 1 <= page_size <= RENTCAST_MAX_PAGE_SIZE:
             raise ValueError(
@@ -52,6 +63,8 @@ class RentCastProvider:
             raise ValueError("Use either zip_code or city/state, not both")
         if status not in {"Active", "Inactive"}:
             raise ValueError("status must be Active or Inactive")
+        if max_retries < 0:
+            raise ValueError("max_retries cannot be negative")
 
         configured_key = api_key or get_settings().rentcast_api_key
         self._api_key = require_setting(configured_key, "RENTCAST_API_KEY")
@@ -68,6 +81,10 @@ class RentCastProvider:
         self.status = status
         self.timeout_seconds = timeout_seconds
         self._session = session or requests.Session()
+        self.max_retries = max_retries
+        self._sleep = sleep
+        self._jitter = jitter
+        self.request_count = 0
 
     def fetch_page(self, cursor: str | None = None) -> RentCastPage:
         try:
@@ -89,27 +106,7 @@ class RentCastProvider:
             params["city"] = self.city
             params["state"] = self.state
 
-        try:
-            response = self._session.get(
-                RENTCAST_SALE_LISTINGS_URL,
-                headers={
-                    "Accept": "application/json",
-                    "X-Api-Key": self._api_key,
-                },
-                params=params,
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            status_code = getattr(getattr(exc, "response", None), "status_code", None)
-            if status_code in {401, 403}:
-                detail = (
-                    f" HTTP {status_code}. Confirm the API key is valid and "
-                    "the free Developer API plan is active"
-                )
-            else:
-                detail = f" HTTP {status_code}" if status_code is not None else ""
-            raise RentCastAPIError(f"RentCast listing request failed.{detail}") from exc
+        response = self._get_with_retries(params)
 
         try:
             payload = response.json()
@@ -137,6 +134,62 @@ class RentCastProvider:
             total_count=total_count,
             next_cursor=str(next_offset) if has_more else None,
         )
+
+    def _get_with_retries(self, params: dict[str, Any]) -> Any:
+        """GET one page, retrying timeouts, 429s, and 5xx a bounded number of times."""
+
+        for attempt in range(self.max_retries + 1):
+            self.request_count += 1
+            try:
+                response = self._session.get(
+                    RENTCAST_SALE_LISTINGS_URL,
+                    headers={
+                        "Accept": "application/json",
+                        "X-Api-Key": self._api_key,
+                    },
+                    params=params,
+                    timeout=self.timeout_seconds,
+                )
+                response.raise_for_status()
+                return response
+            except requests.RequestException as exc:
+                status_code = getattr(
+                    getattr(exc, "response", None), "status_code", None
+                )
+                delay = self._retry_delay(exc, status_code, attempt)
+                if delay is None or attempt == self.max_retries:
+                    raise RentCastAPIError(
+                        _failure_message(status_code, attempts=attempt + 1)
+                    ) from exc
+                print(
+                    "RentCast request failed"
+                    f"{f' with HTTP {status_code}' if status_code else ''}; "
+                    f"retrying in {delay:.1f}s "
+                    f"(retry {attempt + 1} of {self.max_retries}).",
+                    flush=True,
+                )
+                self._sleep(delay)
+        raise AssertionError("unreachable")
+
+    def _retry_delay(
+        self,
+        exc: requests.RequestException,
+        status_code: int | None,
+        attempt: int,
+    ) -> float | None:
+        if status_code is None:
+            if not isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+                return None
+        elif status_code not in RETRYABLE_STATUS_CODES:
+            return None
+        base = RETRY_BASE_SECONDS * 2**attempt
+        delay = base / 2 + self._jitter() * base / 2
+        retry_after = _retry_after_seconds(getattr(exc, "response", None))
+        if retry_after is not None:
+            if retry_after > MAX_RETRY_AFTER_SECONDS:
+                return None
+            delay = max(delay, retry_after)
+        return delay
 
     def fetch_updated_since(
         self,
@@ -178,6 +231,30 @@ class RentCastProvider:
             "last_seen_date": raw_listing.get("lastSeenDate"),
             "price_per_sqft": price / sqft if price and sqft else None,
         }
+
+
+def _failure_message(status_code: int | None, *, attempts: int) -> str:
+    if status_code in {401, 403}:
+        detail = (
+            f" HTTP {status_code}. Confirm the API key is valid and "
+            "the free Developer API plan is active"
+        )
+    else:
+        detail = f" HTTP {status_code}" if status_code is not None else ""
+    suffix = f" after {attempts} attempts" if attempts > 1 else ""
+    return f"RentCast listing request failed{suffix}.{detail}"
+
+
+def _retry_after_seconds(response: Any) -> float | None:
+    if response is None:
+        return None
+    raw = getattr(response, "headers", {}).get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return max(float(raw), 0.0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _source_listing_id(raw_listing: dict[str, Any]) -> str:

@@ -8,7 +8,15 @@ class FixtureProvider:
 
     name = "fixture"
 
-    def __init__(self, records: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        records: list[dict[str, Any]] | None = None,
+        *,
+        page_size: int | None = None,
+    ) -> None:
+        if page_size is not None and page_size < 1:
+            raise ValueError("page_size must be at least 1")
+        self.page_size = page_size
         self._records = records or [
             {
                 "source": "fixture",
@@ -31,7 +39,13 @@ class FixtureProvider:
         ]
 
     def fetch_updated_since(self, cursor: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
-        return list(self._records), cursor
+        """Return one page; the cursor is the next numeric offset."""
+        offset = int(cursor) if cursor is not None else 0
+        if self.page_size is None:
+            return list(self._records[offset:]), None
+        end = offset + self.page_size
+        next_cursor = str(end) if end < len(self._records) else None
+        return list(self._records[offset:end]), next_cursor
 
     def normalize(self, raw_listing: dict[str, Any]) -> dict[str, Any]:
         return {

@@ -1,9 +1,10 @@
 from decimal import Decimal
 
 import pytest
+import requests
 
 from app.providers.audit_rentcast import summarize_coverage
-from app.providers.rentcast import RentCastProvider
+from app.providers.rentcast import RentCastAPIError, RentCastProvider
 
 
 class FakeResponse:
@@ -28,6 +29,46 @@ class FakeSession:
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
         return self.response
+
+
+class ErrorResponse:
+    def __init__(self, status_code, *, retry_after=None):
+        self.status_code = status_code
+        self.headers = {}
+        if retry_after is not None:
+            self.headers["Retry-After"] = str(retry_after)
+
+    def raise_for_status(self):
+        raise requests.HTTPError(f"HTTP {self.status_code}", response=self)
+
+
+class SequenceSession:
+    """Return or raise each queued outcome in order."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _provider(session, **kwargs):
+    sleeps = []
+    provider = RentCastProvider(
+        api_key="test-key",
+        city="Wooster",
+        state="OH",
+        session=session,
+        sleep=sleeps.append,
+        jitter=lambda: 0.0,
+        **kwargs,
+    )
+    return provider, sleeps
 
 
 def _listing(**overrides):
@@ -137,3 +178,76 @@ def test_coverage_summary_excludes_other_counties_and_sensitive_details():
     assert result["field_completeness_pct"]["mlsNumber"] == 50.0
     assert result["field_completeness_pct"]["squareFootage"] == 50.0
     assert "address" not in result
+
+
+def test_rentcast_retries_transient_failures_then_succeeds():
+    session = SequenceSession(
+        requests.Timeout("slow"),
+        ErrorResponse(503),
+        FakeResponse([_listing()], total_count=1),
+    )
+    provider, sleeps = _provider(session)
+
+    page = provider.fetch_page()
+
+    assert len(page.records) == 1
+    assert session.calls == 3
+    assert provider.request_count == 3
+    assert sleeps == [1.0, 2.0]
+
+
+def test_rentcast_honors_retry_after_on_429():
+    session = SequenceSession(
+        ErrorResponse(429, retry_after=7),
+        FakeResponse([], total_count=0),
+    )
+    provider, sleeps = _provider(session)
+
+    provider.fetch_page()
+
+    assert sleeps == [7.0]
+
+
+def test_rentcast_gives_up_when_retry_after_is_too_long():
+    session = SequenceSession(ErrorResponse(429, retry_after=3600))
+    provider, sleeps = _provider(session)
+
+    with pytest.raises(RentCastAPIError, match="HTTP 429"):
+        provider.fetch_page()
+
+    assert sleeps == []
+    assert provider.request_count == 1
+
+
+def test_rentcast_does_not_retry_client_errors():
+    session = SequenceSession(ErrorResponse(401))
+    provider, sleeps = _provider(session)
+
+    with pytest.raises(RentCastAPIError, match="API key is valid"):
+        provider.fetch_page()
+
+    assert session.calls == 1
+    assert sleeps == []
+
+
+def test_rentcast_retries_are_bounded():
+    session = SequenceSession(
+        ErrorResponse(502), ErrorResponse(502), ErrorResponse(502)
+    )
+    provider, sleeps = _provider(session)
+
+    with pytest.raises(RentCastAPIError, match="after 3 attempts. HTTP 502"):
+        provider.fetch_page()
+
+    assert session.calls == 3
+    assert len(sleeps) == 2
+
+
+def test_rentcast_retries_can_be_disabled():
+    session = SequenceSession(requests.ConnectionError("down"))
+    provider, _ = _provider(session, max_retries=0)
+
+    with pytest.raises(RentCastAPIError):
+        provider.fetch_page()
+
+    assert provider.request_count == 1

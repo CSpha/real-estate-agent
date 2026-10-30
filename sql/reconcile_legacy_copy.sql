@@ -50,4 +50,6 @@ SELECT id, source, source_listing_id, county_name, address, city, state, list_pr
 FROM legacy_archive.listing_market_scores;
 
 INSERT INTO public.provider_sync_state
-SELECT * FROM legacy_archive.provider_sync_state;
+    (provider_name, last_status, last_cursor, last_error, updated_at)
+SELECT provider_name, last_status, last_cursor, last_error, updated_at
+FROM legacy_archive.provider_sync_state;

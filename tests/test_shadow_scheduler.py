@@ -147,10 +147,10 @@ def test_scheduled_run_skips_rentcast_when_budget_denies(monkeypatch):
     run_pipeline.assert_called_once_with(skip_rentcast=True)
 
 
-def _usage_engine(attempts, last_attempt):
+def _usage_engine(requests_used, last_attempt):
     engine = MagicMock()
     engine.connect.return_value.__enter__.return_value.execute.return_value.mappings.return_value.one.return_value = {
-        "attempts_this_month": attempts,
+        "requests_this_month": requests_used,
         "last_attempt_at": last_attempt,
     }
     return engine
@@ -162,14 +162,14 @@ NOW = datetime(2026, 10, 31, 18, 0, tzinfo=timezone.utc)
 def test_rentcast_budget_allows_a_spaced_run_under_the_cap(monkeypatch):
     monkeypatch.delenv("SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT", raising=False)
     allowed, _ = scheduler.rentcast_budget_allows(
-        engine=_usage_engine(10, NOW - timedelta(hours=72)), now=NOW
+        engine=_usage_engine(30, NOW - timedelta(hours=72)), now=NOW
     )
     assert allowed
 
 
 def test_rentcast_budget_blocks_retries_within_minimum_spacing():
     allowed, reason = scheduler.rentcast_budget_allows(
-        engine=_usage_engine(1, NOW - timedelta(hours=6)), now=NOW
+        engine=_usage_engine(3, NOW - timedelta(hours=6)), now=NOW
     )
     assert not allowed
     assert "within 60 hours" in reason
@@ -178,14 +178,27 @@ def test_rentcast_budget_blocks_retries_within_minimum_spacing():
 def test_rentcast_budget_blocks_a_run_that_would_exceed_the_cap(monkeypatch):
     monkeypatch.setenv("SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT", "40")
     allowed, reason = scheduler.rentcast_budget_allows(
-        engine=_usage_engine(13, NOW - timedelta(days=5)), now=NOW
+        engine=_usage_engine(32, NOW - timedelta(days=5)), now=NOW
     )
     assert not allowed
-    assert "39 of 40" in reason
+    assert "32 of 40" in reason
+
+
+def test_rentcast_budget_reserves_room_for_retries(monkeypatch):
+    monkeypatch.setenv("SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT", "40")
+    assert scheduler.RENTCAST_MAX_REQUESTS_PER_RUN == 9
+    allowed, _ = scheduler.rentcast_budget_allows(
+        engine=_usage_engine(31, NOW - timedelta(days=5)), now=NOW
+    )
+    assert allowed
 
 
 def test_rentcast_budget_counts_from_the_utc_month_start():
     engine = _usage_engine(0, None)
     scheduler.rentcast_budget_allows(engine=engine, now=NOW)
     params = engine.connect.return_value.__enter__.return_value.execute.call_args.args[1]
-    assert params == {"month_start": datetime(2026, 10, 1, tzinfo=timezone.utc)}
+    assert params == {
+        "month_start": datetime(2026, 10, 1, tzinfo=timezone.utc),
+        "requests_per_run": 3,
+        "max_requests_per_run": 9,
+    }
