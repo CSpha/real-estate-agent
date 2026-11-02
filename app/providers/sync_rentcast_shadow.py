@@ -41,7 +41,8 @@ PRESENT_LISTINGS_SQL = text(
 MARK_MISSING_SQL = text(
     """
     UPDATE listings_current
-    SET missing_from_feed_since = CURRENT_TIMESTAMP
+    SET missing_from_feed_since = CURRENT_TIMESTAMP,
+        scoring_eligible = FALSE
     WHERE source = :source
       AND source_listing_id = ANY(:listing_ids)
       AND missing_from_feed_since IS NULL
@@ -126,7 +127,8 @@ def mark_feed_presence(
 ) -> FeedPresenceResult:
     """Flag pilot listings absent from a complete sync; clear returning ones.
 
-    Rows and history are kept; only `missing_from_feed_since` changes.
+    Rows and history are kept. A missing listing also stops being scored; a
+    returning listing was already re-ingested, which re-applied the policy.
     """
     with engine.begin() as connection:
         present = set(

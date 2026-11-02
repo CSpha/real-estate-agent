@@ -71,7 +71,7 @@ class _StopWatching(Exception):
     pass
 
 
-def _run_watchdog(health_results):
+def _run_watchdog(health_results, notifier=None):
     results = iter(health_results)
 
     def is_healthy(engine):
@@ -89,6 +89,7 @@ def _run_watchdog(health_results):
             sleep=sleep_calls,
             exit_process=exit_process,
             misses_before_exit=2,
+            notifier=notifier,
         )
     except _StopWatching:
         pass
@@ -103,6 +104,19 @@ def test_watchdog_exits_after_consecutive_missed_deadlines():
 def test_watchdog_resets_after_a_healthy_check():
     exit_process = _run_watchdog([False, True, False, True])
     exit_process.assert_not_called()
+
+
+def test_watchdog_reports_an_overdue_deadline():
+    notifier = MagicMock()
+    _run_watchdog([True, False, False], notifier=notifier)
+    assert notifier.problem.call_count == 2
+    assert notifier.problem.call_args.args[0] == "overdue"
+
+
+def test_watchdog_does_not_notify_while_healthy():
+    notifier = MagicMock()
+    _run_watchdog([True, True], notifier=notifier)
+    notifier.problem.assert_not_called()
 
 
 def test_watchdog_does_not_exit_when_history_is_unreadable():

@@ -137,8 +137,11 @@ After a complete sync, pilot-city listings that RentCast no longer returns get
 `listings_current.missing_from_feed_since`; their rows and history are kept, and
 the marker clears if a listing reappears. If the feed returns fewer than half the
 known listings, the check is skipped as a probable outage rather than marking
-most listings missing. Missing listings are still scored in shadow review for
-now.
+most listings missing. A missing listing also gets `scoring_eligible = false`,
+so it drops out of valuations, market scores, rent estimates, the review CSV,
+the dashboard, and run metrics; the snapshot history records the change. If it
+reappears, the next sync re-applies the normal scoring policy. Each run records
+the total in `details_json.missing_from_feed_count`.
 
 The generic adapter sync (`python -m app.providers.sync --provider rentcast`)
 loads every page and stores its cursor in `provider_sync_state` only after each
@@ -178,6 +181,26 @@ The review writes `data/shadow_scoring_review.csv` (ignored by Git) with every
 listing's market context, comparable result, review score, property type, price,
 square footage, days on market, missing fields, and policy decision.
 
+### Operational warnings
+
+The shadow scheduler can post to a separate Slack channel when something needs
+attention. Set `SLACK_OPS_WEBHOOK_URL` in `.env` (it is passed only to
+`shadow-runner`, never to alert commands), rebuild the runner, and confirm it:
+
+```powershell
+python -m app.ops.notify --test
+docker compose --profile shadow up -d --build shadow-runner
+```
+
+It posts once when a problem starts and once when the next run succeeds:
+a failed run, a missed deadline (from the in-process watchdog), or run history
+that cannot be read. Repeats of the same problem, including across restarts, are
+suppressed by `data/ops_notification_state.json` in the runner's data volume; a
+post that fails is retried at the next report. Without the variable, warnings
+are only logged. Because the notifier runs inside the scheduler, it cannot
+report Docker Desktop or the whole container being stopped; `/health` and the
+dashboard still show that as stale data.
+
 Run the dedicated pipeline once, or start its three-day Docker scheduler:
 
 ```powershell
@@ -186,8 +209,8 @@ docker compose --profile shadow up -d shadow-runner
 python -m app.shadow.readiness
 ```
 
-The shadow runner has no Slack webhook in its container environment and imports
-no alert module. Scheduled runs do not call RentCast by default, so they reuse
+The shadow runner has no listing-alert webhook in its container environment and
+imports no alert module. Scheduled runs do not call RentCast by default, so they reuse
 the listings and rent estimates already stored in Postgres while refreshing
 Redfin context, auditor sales, valuations, the review report, and
 `shadow_pipeline_runs`. Scheduled RentCast listing refreshes require an

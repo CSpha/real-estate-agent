@@ -75,6 +75,7 @@ LISTINGS_SQL = text(
         LIMIT 1
     ) deal ON TRUE
     WHERE listing.source = :source
+      AND listing.missing_from_feed_since IS NULL
     ORDER BY market.market_score DESC NULLS LAST,
              COALESCE(
                  deal.total_points,

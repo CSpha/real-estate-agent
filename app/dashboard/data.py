@@ -89,6 +89,7 @@ LISTINGS_SQL = text(
         LIMIT 1
     ) forecast ON TRUE
     WHERE listing.source = :source
+      AND listing.missing_from_feed_since IS NULL
     ORDER BY
         COALESCE(score.total_points, score.normalized_available_score) DESC NULLS LAST,
         listing.list_price ASC NULLS LAST,

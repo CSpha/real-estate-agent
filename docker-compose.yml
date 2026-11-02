@@ -69,6 +69,8 @@ services:
       SHADOW_ENABLE_RENTCAST_API_CALLS: ${SHADOW_ENABLE_RENTCAST_API_CALLS:-false}
       SHADOW_RENTCAST_MIN_HOURS: ${SHADOW_RENTCAST_MIN_HOURS:-60}
       SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT: ${SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT:-40}
+      # Operational warnings only; listing-alert webhooks are never passed here.
+      SLACK_OPS_WEBHOOK_URL: ${SLACK_OPS_WEBHOOK_URL:-}
     volumes:
       - ./data/shadow-runner:/app/data
     command:
