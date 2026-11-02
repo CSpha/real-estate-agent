@@ -48,6 +48,17 @@ MARK_MISSING_SQL = text(
       AND missing_from_feed_since IS NULL
     """
 )
+# Listings marked missing before missing listings stopped being scored keep
+# scoring_eligible = TRUE; every sync clears that so they cannot linger.
+EXCLUDE_STILL_MISSING_SQL = text(
+    """
+    UPDATE listings_current
+    SET scoring_eligible = FALSE
+    WHERE source = :source
+      AND missing_from_feed_since IS NOT NULL
+      AND scoring_eligible
+    """
+)
 MARK_RETURNED_SQL = text(
     """
     UPDATE listings_current
@@ -164,12 +175,19 @@ def mark_feed_presence(
                 MARK_RETURNED_SQL,
                 {"source": SOURCE, "listing_ids": sorted(seen_listing_ids)},
             ).rowcount
+        excluded_count = connection.execute(
+            EXCLUDE_STILL_MISSING_SQL, {"source": SOURCE}
+        ).rowcount
     if skipped_reason:
         print(f"Feed presence check skipped: {skipped_reason}.")
     print(
         f"Feed presence: {missing_count} listing(s) newly missing, "
         f"{returned_count} returned to the feed."
     )
+    if excluded_count > 0:
+        print(
+            f"Excluded {excluded_count} still-missing listing(s) from scoring."
+        )
     return FeedPresenceResult(
         newly_missing_count=max(missing_count, 0),
         returned_count=max(returned_count, 0),
