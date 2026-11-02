@@ -1802,6 +1802,37 @@ def test_feed_presence_marks_and_clears_missing_listings(postgres_engine):
         repeat = mark_feed_presence(postgres_engine, set(ids[:5]))
         assert repeat.newly_missing_count == 0
 
+        # Listings marked missing by older code stayed eligible; a later sync
+        # (even a skipped presence check) excludes them.
+        def feed_5_eligible() -> bool:
+            with postgres_engine.connect() as conn:
+                return conn.scalar(
+                    text(
+                        "SELECT scoring_eligible FROM listings_current "
+                        "WHERE source = 'rentcast' AND source_listing_id = 'feed-5'"
+                    )
+                )
+
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE listings_current SET scoring_eligible = TRUE "
+                    "WHERE source = 'rentcast' AND source_listing_id = 'feed-5'"
+                )
+            )
+        mark_feed_presence(postgres_engine, set(ids[:5]))
+        assert feed_5_eligible() is False
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE listings_current SET scoring_eligible = TRUE "
+                    "WHERE source = 'rentcast' AND source_listing_id = 'feed-5'"
+                )
+            )
+        skipped = mark_feed_presence(postgres_engine, {"feed-0"})
+        assert skipped.skipped_reason is not None
+        assert feed_5_eligible() is False
+
         # A real sync re-ingests returning listings before marking presence.
         ingest_records(
             [_provider_listing("rentcast", "feed-5")],
@@ -1811,13 +1842,7 @@ def test_feed_presence_marks_and_clears_missing_listings(postgres_engine):
         returned = mark_feed_presence(postgres_engine, set(ids))
         assert returned.returned_count == 1
         assert missing() == []
-        with postgres_engine.connect() as conn:
-            assert conn.scalar(
-                text(
-                    "SELECT scoring_eligible FROM listings_current "
-                    "WHERE source = 'rentcast' AND source_listing_id = 'feed-5'"
-                )
-            ) is True
+        assert feed_5_eligible() is True
 
         shrunk = mark_feed_presence(postgres_engine, {"feed-0", "feed-new"})
         assert shrunk.skipped_reason is not None
