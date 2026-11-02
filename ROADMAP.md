@@ -162,8 +162,8 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 6. Create a Slack test channel webhook, set `SLACK_TEST_WEBHOOK_URL`, and
    validate real messages with `process_alert_outbox --test-channel`. Then
    decide on Block Kit formatting and digest delivery (Phase 4).
-7. Decide how listings marked `missing_from_feed_since` should be treated in
-   shadow scoring and readiness metrics (they are still scored today).
+7. Create a Slack ops channel webhook, set `SLACK_OPS_WEBHOOK_URL`, and run
+   `python -m app.ops.notify --test`.
 8. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
@@ -243,7 +243,8 @@ unless their terms and an explicit agreement authorize it.
       and deleted/missing statuses (status names are normalized; RentCast only
       reports Active/Inactive, so a full lifecycle needs an MLS feed)
 - [x] Detect listings that disappear from the feed without deleting history
-- [ ] Decide how missing listings affect scoring, readiness, and alerts
+- [x] Exclude missing listings from scoring, the review, the dashboard, and
+      readiness metrics (`scoring_eligible = false` while missing)
 - [x] Extend quarantine to RentCast listing normalization failures
 - [ ] Document licensing, attribution, display, photo, and retention requirements
 
@@ -311,7 +312,9 @@ unless their terms and an explicit agreement authorize it.
 - [ ] Separately deployed production alert worker and alert-processing schedule
       (after promotion)
 - [ ] Structured logging with run, provider, and event IDs in pipelines and workers
-- [ ] Operational alert for stale or failed syncs (health is pull-only today)
+- [x] Operational Slack warning for failed, overdue, or unreadable shadow runs,
+      once per problem plus a recovery message (`SLACK_OPS_WEBHOOK_URL`)
+- [ ] External check that can warn when Docker or the whole runner is down
 - [ ] Monitoring for repeated provider failures and database capacity
 - [ ] Off-machine backup copies and a retention policy
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
@@ -519,6 +522,9 @@ Still needed:
   hardened: Alembic-managed resumable sync state, RentCast retries with
   request-count budgeting, RentCast quarantine, and feed-presence tracking
   (229 unit and 27 integration tests passed).
+- **October 30:** Operational Slack warnings for the shadow scheduler (separate
+  ops webhook, deduplicated across restarts) and missing-listing exclusion from
+  scoring and readiness metrics (240 unit and 27 integration tests passed).
 
 ## External references
 

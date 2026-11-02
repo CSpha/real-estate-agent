@@ -69,6 +69,15 @@ METRICS_SQL = text(
         ) AS supported_valuation_count
     FROM listings_current listing
     WHERE source = :source
+      AND missing_from_feed_since IS NULL
+    """
+)
+MISSING_FROM_FEED_SQL = text(
+    """
+    SELECT COUNT(*)
+    FROM listings_current
+    WHERE source = :source
+      AND missing_from_feed_since IS NOT NULL
     """
 )
 
@@ -140,6 +149,9 @@ def run_shadow_pipeline(
                 .mappings()
                 .one()
             )
+            details["missing_from_feed_count"] = connection.execute(
+                MISSING_FROM_FEED_SQL, {"source": source}
+            ).scalar_one()
         with engine.begin() as connection:
             connection.execute(
                 FINISH_RUN_SQL,

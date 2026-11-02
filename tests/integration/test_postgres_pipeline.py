@@ -55,6 +55,7 @@ from app.providers.rentcast_rent import RentEstimate
 from app.providers.fixture import FixtureProvider
 from app.providers.sync import sync_provider
 from app.providers.sync_rentcast_shadow import mark_feed_presence
+import app.shadow.run_pipeline as run_pipeline_module
 from app.reports.ingest_errors import summarize_ingest_errors
 from app.searches.models import (
     SavedSearchCreate,
@@ -1775,13 +1776,48 @@ def test_feed_presence_marks_and_clears_missing_listings(postgres_engine):
         first = mark_feed_presence(postgres_engine, set(ids[:5]))
         assert first.newly_missing_count == 1
         assert missing() == ["feed-5"]
+        with postgres_engine.connect() as conn:
+            eligible = dict(
+                conn.execute(
+                    text(
+                        "SELECT source_listing_id, scoring_eligible "
+                        "FROM listings_current WHERE source = 'rentcast'"
+                    )
+                ).all()
+            )
+        assert eligible["feed-5"] is False
+        assert eligible["feed-0"] is True
+        with postgres_engine.connect() as conn:
+            metrics = conn.execute(
+                run_pipeline_module.METRICS_SQL,
+                {"source": "rentcast", "as_of_date": date(2026, 10, 31)},
+            ).mappings().one()
+            missing_total = conn.execute(
+                run_pipeline_module.MISSING_FROM_FEED_SQL, {"source": "rentcast"}
+            ).scalar_one()
+        assert metrics["listing_count"] == 6
+        assert metrics["scoring_eligible_count"] == 6
+        assert missing_total == 1
 
         repeat = mark_feed_presence(postgres_engine, set(ids[:5]))
         assert repeat.newly_missing_count == 0
 
+        # A real sync re-ingests returning listings before marking presence.
+        ingest_records(
+            [_provider_listing("rentcast", "feed-5")],
+            engine=postgres_engine,
+            alert_eligible=False,
+        )
         returned = mark_feed_presence(postgres_engine, set(ids))
         assert returned.returned_count == 1
         assert missing() == []
+        with postgres_engine.connect() as conn:
+            assert conn.scalar(
+                text(
+                    "SELECT scoring_eligible FROM listings_current "
+                    "WHERE source = 'rentcast' AND source_listing_id = 'feed-5'"
+                )
+            ) is True
 
         shrunk = mark_feed_presence(postgres_engine, {"feed-0", "feed-new"})
         assert shrunk.skipped_reason is not None
