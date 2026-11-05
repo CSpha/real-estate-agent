@@ -71,6 +71,8 @@ services:
       SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT: ${SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT:-40}
       # Operational warnings only; listing-alert webhooks are never passed here.
       SLACK_OPS_WEBHOOK_URL: ${SLACK_OPS_WEBHOOK_URL:-}
+      # Pinged after each successful run so an external monitor can warn when runs stop.
+      SHADOW_HEARTBEAT_URL: ${SHADOW_HEARTBEAT_URL:-}
     volumes:
       - ./data/shadow-runner:/app/data
     command:
