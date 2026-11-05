@@ -198,8 +198,25 @@ that cannot be read. Repeats of the same problem, including across restarts, are
 suppressed by `data/ops_notification_state.json` in the runner's data volume; a
 post that fails is retried at the next report. Without the variable, warnings
 are only logged. Because the notifier runs inside the scheduler, it cannot
-report Docker Desktop or the whole container being stopped; `/health` and the
-dashboard still show that as stale data.
+report Docker Desktop or the whole container being stopped; the external
+heartbeat below covers that.
+
+### External heartbeat
+
+Set `SHADOW_HEARTBEAT_URL` to a dead-man's-switch ping URL, such as a
+Healthchecks.io check with a 3-day period and 7-hour grace (one run interval
+plus the retry window). The scheduler pings it after each successful run; if
+pings stop because the computer is off, Docker is stopped, the container keeps
+crashing, or runs keep failing, the external service sends the warning. Sleep
+alone does not trigger it, because a run that comes due during sleep starts on
+wake. Keep the URL secret: anyone with it can mark the check healthy.
+
+```powershell
+python -m app.ops.heartbeat --test
+docker compose --profile shadow up -d --build shadow-runner
+```
+
+A failed ping is logged and does not fail the run.
 
 Run the dedicated pipeline once, or start its three-day Docker scheduler:
 

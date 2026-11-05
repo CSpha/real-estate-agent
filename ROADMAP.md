@@ -162,8 +162,8 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 6. Create a Slack test channel webhook, set `SLACK_TEST_WEBHOOK_URL`, and
    validate real messages with `process_alert_outbox --test-channel`. Then
    decide on Block Kit formatting and digest delivery (Phase 4).
-7. Create a Slack ops channel webhook, set `SLACK_OPS_WEBHOOK_URL`, and run
-   `python -m app.ops.notify --test`.
+7. Keep the computer awake or accept wake-time delays; shadow runs, backups,
+   and ops warnings pause while it sleeps.
 8. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
@@ -314,7 +314,8 @@ unless their terms and an explicit agreement authorize it.
 - [ ] Structured logging with run, provider, and event IDs in pipelines and workers
 - [x] Operational Slack warning for failed, overdue, or unreadable shadow runs,
       once per problem plus a recovery message (`SLACK_OPS_WEBHOOK_URL`)
-- [ ] External check that can warn when Docker or the whole runner is down
+- [x] External heartbeat that warns when Docker or the whole runner is down
+      (`SHADOW_HEARTBEAT_URL`, pinged after each successful run)
 - [ ] Monitoring for repeated provider failures and database capacity
 - [ ] Off-machine backup copies and a retention policy
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
@@ -525,6 +526,11 @@ Still needed:
 - **October 30:** Operational Slack warnings for the shadow scheduler (separate
   ops webhook, deduplicated across restarts) and missing-listing exclusion from
   scoring and readiness metrics (240 unit and 27 integration tests passed).
+- **November 3:** Still-missing listings are excluded on every sync (59 cleared
+  in the first run), the Slack webhooks moved to a new workspace, and the run
+  completed on wake after the computer slept through its due time.
+- **November 5:** External heartbeat after each successful shadow run
+  (`SHADOW_HEARTBEAT_URL`, Healthchecks.io: 3-day period, 7-hour grace).
 
 ## External references
 

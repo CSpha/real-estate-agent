@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from app.db import get_engine
 
+from app.ops.heartbeat import ping_heartbeat
 from app.ops.notify import OpsNotifier
 from app.providers.rentcast import DEFAULT_MAX_RETRIES
 from app.providers.sync_rentcast_shadow import PILOT_CITIES
@@ -266,6 +267,7 @@ def main() -> None:
                 f"run_id={result['run_id']}, ready={result['readiness']['ready']}"
             )
             notifier.resolved(f"Run {result['run_id']} succeeded.")
+            ping_heartbeat()
             delay = 0
         # Also back off when a failure happens before a run can be recorded.
         if delay:
