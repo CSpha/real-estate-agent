@@ -2,6 +2,18 @@ import json
 
 from sqlalchemy import Engine, text
 
+from app.alerts.formatting import (
+    address_link,
+    context_block,
+    escape,
+    fields_block,
+    full_address,
+    header_block,
+    money,
+    percent,
+    section_block,
+    to_decimal,
+)
 from app.db import get_engine
 
 
@@ -94,16 +106,41 @@ def get_price_drop_events(engine: Engine | None = None):
 
 
 def format_slack_message(event):
+    change = f"{money(event['price_change'])} ({percent(event['price_change_pct'])})"
     return {
         "text": (
-            "Price drop detected\n"
-            f"{event['address']}, {event['city']}, {event['state']}\n"
-            f"Previous price: ${event['previous_price']}\n"
-            f"Current price: ${event['current_price']}\n"
-            f"Change: ${event['price_change']} ({event['price_change_pct']}%)\n"
+            f"Price drop: {full_address(event)}\n"
+            f"Previous price: {money(event['previous_price'])}\n"
+            f"Current price: {money(event['current_price'])}\n"
+            f"Change: {change}\n"
             f"Listing ID: {event['source_listing_id']}"
-        )
+        ),
+        "blocks": [
+            header_block(f":chart_with_downwards_trend: Price drop: {event['address']}"),
+            section_block(f"*{address_link(event)}*"),
+            fields_block(
+                [
+                    ("Now", money(event["current_price"])),
+                    ("Was", money(event["previous_price"])),
+                    ("Change", change),
+                ]
+            ),
+            context_block(f"Listing ID {escape(event['source_listing_id'])}"),
+        ],
     }
+
+
+def summarize_event(event):
+    """One digest line: (mrkdwn, plain text)."""
+    detail = (
+        f"{money(event['current_price'])}, down "
+        f"{money(abs(to_decimal(event['price_change']) or 0))} "
+        f"({percent(event['price_change_pct'])}) from {money(event['previous_price'])}"
+    )
+    return (
+        f":chart_with_downwards_trend: *{address_link(event)}*  {detail}",
+        f"Price drop: {full_address(event)}, {detail}",
+    )
 
 
 def enqueue_price_drop_events(engine: Engine | None = None) -> int:

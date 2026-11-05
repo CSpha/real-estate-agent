@@ -17,7 +17,9 @@ from typing import Any, Callable
 from sqlalchemy import Engine, text
 
 from app.alerts import send_potential_deal_alerts, send_price_drop_alerts
+from app.alerts.formatting import build_digest_message, context_block
 from app.alerts.outbox import MIN_SEND_INTERVAL_SECONDS
+from app.alerts.process_alert_outbox import SUMMARIZERS
 from app.alerts.slack import send_to_slack
 from app.config import get_settings, require_setting
 from app.db import get_engine
@@ -118,6 +120,7 @@ def build_test_messages(
     *,
     source: str = "rentcast",
     limit: int = 3,
+    digest: bool = False,
     engine: Engine | None = None,
 ) -> list[tuple[str, str, dict[str, Any]]]:
     engine = engine or get_engine()
@@ -129,10 +132,26 @@ def build_test_messages(
             ).mappings().all()
             print(f"Found {len(events)} {alert_type} event(s) for {source}.")
             for event in events:
-                message = formatter(event)
-                message = {**message, "text": TEST_BANNER + message["text"]}
-                messages.append((alert_type, str(event["source_listing_id"]), message))
-    return messages
+                messages.append(
+                    (alert_type, str(event["source_listing_id"]), formatter(event), event)
+                )
+    if digest and messages:
+        message = build_digest_message(
+            [(alert_type, event) for alert_type, _id, _message, event in messages],
+            SUMMARIZERS,
+        )
+        messages = [("digest", f"{len(messages)} events", message, None)]
+    return [
+        (alert_type, label, _mark_as_test(message))
+        for alert_type, label, message, _event in messages
+    ]
+
+
+def _mark_as_test(message: dict[str, Any]) -> dict[str, Any]:
+    marked = {**message, "text": TEST_BANNER + message["text"]}
+    if "blocks" in message:
+        marked["blocks"] = [context_block(TEST_BANNER.strip()), *message["blocks"]]
+    return marked
 
 
 def send_test_alerts(
@@ -140,6 +159,7 @@ def send_test_alerts(
     source: str = "rentcast",
     limit: int = 3,
     dry_run: bool = False,
+    digest: bool = False,
     engine: Engine | None = None,
     send: Callable[[str, dict[str, Any]], None] = send_to_slack,
     sleep: Callable[[float], None] = time.sleep,
@@ -149,7 +169,7 @@ def send_test_alerts(
     url = None if dry_run else resolve_test_webhook_url()
     sent = 0
     for index, (alert_type, listing_id, message) in enumerate(
-        build_test_messages(source=source, limit=limit, engine=engine)
+        build_test_messages(source=source, limit=limit, digest=digest, engine=engine)
     ):
         label = f"{alert_type} {listing_id}"
         if url is None:
@@ -188,8 +208,18 @@ def main() -> None:
         action="store_true",
         help="Print the messages without sending them.",
     )
+    parser.add_argument(
+        "--digest",
+        action="store_true",
+        help="Combine the events into one digest message, as busy runs do.",
+    )
     args = parser.parse_args()
-    send_test_alerts(source=args.source, limit=args.limit, dry_run=args.dry_run)
+    send_test_alerts(
+        source=args.source,
+        limit=args.limit,
+        dry_run=args.dry_run,
+        digest=args.digest,
+    )
 
 
 if __name__ == "__main__":

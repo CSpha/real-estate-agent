@@ -9,6 +9,7 @@ from typing import Any
 import requests
 from sqlalchemy import Engine, text
 
+from app.alerts.formatting import build_digest_message
 from app.alerts.slack import SlackDeliveryError
 from app.db import get_engine
 
@@ -18,6 +19,18 @@ CLAIM_TIMEOUT_MINUTES = 10
 MAX_RETRY_DELAY_SECONDS = 3600
 # Slack incoming webhooks allow roughly one message per second.
 MIN_SEND_INTERVAL_SECONDS = 1.0
+# More than DIGEST_THRESHOLD due alerts are sent as digests of up to DIGEST_SIZE.
+DIGEST_THRESHOLD = 3
+DIGEST_SIZE = 10
+
+COUNT_DUE_SQL = text(
+    """
+    SELECT COUNT(*)
+    FROM alert_outbox
+    WHERE status IN ('pending', 'retryable_failed')
+      AND available_at <= CURRENT_TIMESTAMP
+    """
+)
 
 DUE_ALERTS_SQL = text(
     """
@@ -45,7 +58,7 @@ CLAIM_NEXT_SQL = text(
         )
         ORDER BY available_at, id
         FOR UPDATE SKIP LOCKED
-        LIMIT 1
+        LIMIT :batch_size
     )
     UPDATE alert_outbox outbox
     SET
@@ -60,14 +73,50 @@ CLAIM_NEXT_SQL = text(
 )
 
 
-def claim_next_alert(engine: Engine | None = None) -> dict[str, Any] | None:
+RELEASE_SQL = text(
+    """
+    UPDATE alert_outbox
+    SET
+        status = 'pending',
+        claimed_at = NULL,
+        attempt_count = GREATEST(attempt_count - 1, 0)
+    WHERE id = ANY(:alert_ids)
+      AND status = 'processing'
+    """
+)
+
+
+def claim_alerts(engine: Engine | None, batch_size: int) -> list[dict[str, Any]]:
     engine = engine or get_engine()
     with engine.begin() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             CLAIM_NEXT_SQL,
-            {"claim_timeout_minutes": CLAIM_TIMEOUT_MINUTES},
-        ).mappings().first()
-    return dict(row) if row is not None else None
+            {
+                "claim_timeout_minutes": CLAIM_TIMEOUT_MINUTES,
+                "batch_size": batch_size,
+            },
+        ).mappings().all()
+    return sorted((dict(row) for row in rows), key=lambda row: (row["available_at"], row["id"]))
+
+
+def claim_next_alert(engine: Engine | None = None) -> dict[str, Any] | None:
+    claimed = claim_alerts(engine, 1)
+    return claimed[0] if claimed else None
+
+
+def release_alerts(alerts: list[Mapping[str, Any]], engine: Engine | None = None) -> None:
+    """Return claimed alerts to pending without counting the attempt."""
+    if not alerts:
+        return
+    engine = engine or get_engine()
+    with engine.begin() as conn:
+        conn.execute(RELEASE_SQL, {"alert_ids": [alert["id"] for alert in alerts]})
+
+
+def count_due_alerts(engine: Engine | None = None) -> int:
+    engine = engine or get_engine()
+    with engine.connect() as conn:
+        return int(conn.execute(COUNT_DUE_SQL).scalar_one())
 
 
 def mark_alert_sent(
@@ -245,14 +294,29 @@ def deliver_pending_alerts(
     min_send_interval_seconds: float = MIN_SEND_INTERVAL_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
+    summarizers: Mapping[str, Callable[[Mapping[str, Any]], tuple[str, str]]]
+    | None = None,
 ) -> dict[str, int]:
     """Deliver due alerts, pacing sends and stopping when Slack says to.
 
     A rate limit leaves remaining alerts pending for a later run. A webhook-level
     failure (revoked, archived, or missing channel) marks only the current alert
     as permanently failed and stops, so the rest are not burned on a bad webhook.
+    With summarizers, more than DIGEST_THRESHOLD due alerts go out as digests.
     """
     engine = engine or get_engine()
+    if summarizers is not None and count_due_alerts(engine) > DIGEST_THRESHOLD:
+        print("Several alerts are due; sending them as digests.")
+        return _deliver_digests(
+            webhook_url,
+            summarizers,
+            send=send,
+            engine=engine,
+            limit=limit,
+            min_send_interval_seconds=min_send_interval_seconds,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
     counts = {"sent": 0, "failed": 0}
     last_send_at: float | None = None
 
@@ -306,5 +370,87 @@ def deliver_pending_alerts(
         else:
             mark_alert_sent(alert, engine)
             counts["sent"] += 1
+
+    return counts
+
+
+def _deliver_digests(
+    webhook_url: str,
+    summarizers: Mapping[str, Callable[[Mapping[str, Any]], tuple[str, str]]],
+    *,
+    send: Callable[[str, dict[str, Any]], None],
+    engine: Engine,
+    limit: int,
+    min_send_interval_seconds: float,
+    sleep: Callable[[float], None],
+    monotonic: Callable[[], float],
+) -> dict[str, int]:
+    """Send due alerts in digests of up to DIGEST_SIZE, one Slack message each.
+
+    Every alert in a digest shares its outcome. A webhook-level failure marks
+    only the first alert permanently failed and returns the rest to pending.
+    """
+    counts = {"sent": 0, "failed": 0}
+    last_send_at: float | None = None
+    processed = 0
+
+    while processed < limit:
+        batch = claim_alerts(engine, min(DIGEST_SIZE, limit - processed))
+        if not batch:
+            break
+        processed += len(batch)
+
+        items: list[tuple[str, dict[str, Any]]] = []
+        ready: list[dict[str, Any]] = []
+        for alert in batch:
+            summarizer = summarizers.get(alert["alert_type"])
+            try:
+                if summarizer is None:
+                    raise ValueError(f"Unsupported alert type: {alert['alert_type']}")
+                payload = _payload(alert)
+                summarizer(payload)
+            except Exception as exc:
+                mark_alert_failed(alert, exc, retryable=False, engine=engine)
+                counts["failed"] += 1
+                continue
+            items.append((alert["alert_type"], payload))
+            ready.append(alert)
+        if not ready:
+            continue
+
+        message = build_digest_message(items, summarizers)
+        if last_send_at is not None:
+            wait = min_send_interval_seconds - (monotonic() - last_send_at)
+            if wait > 0:
+                sleep(wait)
+        last_send_at = monotonic()
+
+        try:
+            send(webhook_url, message)
+        except Exception as exc:
+            if getattr(exc, "webhook_unusable", False):
+                mark_alert_failed(ready[0], exc, retryable=False, engine=engine)
+                release_alerts(ready[1:], engine)
+                counts["failed"] += 1
+                print(f"Stopping delivery: Slack webhook is unusable ({exc}).")
+                break
+            for alert in ready:
+                mark_alert_failed(
+                    alert,
+                    exc,
+                    retryable=is_retryable_slack_error(exc),
+                    engine=engine,
+                    retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+                    rate_limited=getattr(exc, "rate_limited", False),
+                )
+            counts["failed"] += len(ready)
+            if getattr(exc, "rate_limited", False):
+                print(f"Stopping delivery: Slack rate limited this webhook ({exc}).")
+                break
+        else:
+            for alert in ready:
+                mark_alert_sent(alert, engine)
+            counts["sent"] += len(ready)
+        print(f"Digest of {len(ready)} alert(s) processed.")
 
     return counts
