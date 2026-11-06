@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -18,7 +18,14 @@ from app.db import get_connection
 from app.analyst import create_analysis
 from app.dashboard.data import build_dashboard_data
 from app.searches.router import router as saved_searches_router
-from app.utils.db import get_engine
+from app.api_limits import (
+    get_api_engine as get_engine,
+    page_limit,
+    page_offset,
+    paginate,
+    set_local_timeout,
+    set_page_headers,
+)
 from app.api_security import rate_limiter, require_api_token
 
 
@@ -301,25 +308,38 @@ def row_to_dict(row) -> Dict[str, Any]:
 
 
 @app.get("/listings")
-def get_listings():
+def get_listings(
+    response: Response,
+    limit: int = page_limit(),
+    offset: int = page_offset(),
+):
     conn = get_connection()
 
     try:
         with conn.cursor() as cur:
-            cur.execute("""
+            set_local_timeout(cur)
+            cur.execute(
+                """
                 SELECT *
                 FROM listings_current
                 ORDER BY id
-                LIMIT 100;
-            """)
-            rows = cur.fetchall()
+                LIMIT %s OFFSET %s;
+            """,
+                (limit + 1, offset),
+            )
+            rows, has_more = paginate(cur.fetchall(), limit)
+            set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
             return [row_to_dict(row) for row in rows]
     finally:
         conn.close()
 
 
 @app.post("/score", response_model=List[ScoreResult])
-def run_scoring(limit: int = Query(100, ge=1, le=1000)):
+def run_scoring(
+    response: Response,
+    limit: int = page_limit(),
+    offset: int = page_offset(),
+):
     query = text(
         """
         WITH ranked_history AS (
@@ -410,15 +430,18 @@ def run_scoring(limit: int = Query(100, ge=1, le=1000)):
             ON l.source = p.source
            AND l.source_listing_id = p.source_listing_id
         WHERE l.scoring_eligible
-        ORDER BY market_score DESC, price_change_pct ASC
-        LIMIT :limit
+        ORDER BY market_score DESC, price_change_pct ASC,
+                 l.source, l.source_listing_id
+        LIMIT :limit OFFSET :offset
         """
     )
 
     engine = get_engine()
     with engine.connect() as conn:
-        results = conn.execute(query, {"limit": limit}).all()
+        results = conn.execute(query, {"limit": limit + 1, "offset": offset}).all()
 
+    results, has_more = paginate(results, limit)
+    set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
     return [row_to_dict(row) for row in results]
 
 
@@ -428,6 +451,7 @@ def get_listing(listing_id: int):
 
     try:
         with conn.cursor() as cur:
+            set_local_timeout(cur)
             cur.execute(
                 """
                 SELECT *
@@ -448,7 +472,11 @@ def get_listing(listing_id: int):
 
 
 @app.get("/alerts", response_model=List[AlertRecord])
-def list_alerts(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
+def list_alerts(
+    response: Response,
+    limit: int = page_limit(),
+    offset: int = page_offset(),
+):
     query = text(
         """
         SELECT
@@ -460,15 +488,17 @@ def list_alerts(limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, g
             payload_json,
             sent_at
         FROM alerts_sent
-        ORDER BY sent_at DESC
+        ORDER BY sent_at DESC, id DESC
         LIMIT :limit OFFSET :offset
         """
     )
 
     engine = get_engine()
     with engine.connect() as conn:
-        results = conn.execute(query, {"limit": limit, "offset": offset}).all()
+        results = conn.execute(query, {"limit": limit + 1, "offset": offset}).all()
 
+    results, has_more = paginate(results, limit)
+    set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
     alerts = []
     for row in results:
         payload_raw = row.payload_json
@@ -502,7 +532,11 @@ def analyze_listing(source: str, source_listing_id: str, request: AnalysisReques
 
 @app.get("/listings/{source}/{source_listing_id}/analyses")
 def list_analyses(
-    source: str, source_listing_id: str, limit: int = Query(20, ge=1, le=100)
+    source: str,
+    source_listing_id: str,
+    response: Response,
+    limit: int = page_limit(20, 100),
+    offset: int = page_offset(),
 ):
     if not analyst_feature_enabled():
         raise HTTPException(status_code=404, detail="Analyst feature is disabled")
@@ -514,10 +548,17 @@ def list_analyses(
                    evidence_json AS evidence, analysis_json AS analysis, created_at
             FROM investment_analyses
             WHERE source = :source AND source_listing_id = :listing_id
-            ORDER BY created_at DESC LIMIT :limit
+            ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset
         """),
-            {"source": source, "listing_id": source_listing_id, "limit": limit},
+            {
+                "source": source,
+                "listing_id": source_listing_id,
+                "limit": limit + 1,
+                "offset": offset,
+            },
         ).all()
+    rows, has_more = paginate(rows, limit)
+    set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
     return [row_to_dict(row) for row in rows]
 
 
@@ -563,7 +604,12 @@ def review_analysis(analysis_id: int, request: AnalysisReviewRequest):
 
 
 @app.get("/analyses/{analysis_id}/reviews")
-def list_analysis_reviews(analysis_id: int):
+def list_analysis_reviews(
+    analysis_id: int,
+    response: Response,
+    limit: int = page_limit(),
+    offset: int = page_offset(),
+):
     if not analyst_feature_enabled():
         raise HTTPException(status_code=404, detail="Analyst feature is disabled")
 
@@ -574,10 +620,13 @@ def list_analysis_reviews(analysis_id: int):
                    corrections_json AS corrections, created_at
             FROM investment_analysis_reviews
             WHERE analysis_id = :analysis_id
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
+            LIMIT :limit OFFSET :offset
         """),
-            {"analysis_id": analysis_id},
+            {"analysis_id": analysis_id, "limit": limit + 1, "offset": offset},
         ).all()
+    rows, has_more = paginate(rows, limit)
+    set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
     return [row_to_dict(row) for row in rows]
 
 

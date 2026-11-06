@@ -321,7 +321,7 @@ unless their terms and an explicit agreement authorize it.
 - [ ] Monitoring for repeated provider failures and database capacity
 - [ ] Off-machine backup copies and a retention policy
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
-- [ ] Validate and limit API pagination and expensive queries
+- [x] Validate and limit API pagination and expensive queries
 - [x] CI for migration round trips, integration tests, and secret scanning
 - [ ] Document deployment, credential rotation, and incident response
 
@@ -492,6 +492,9 @@ Still needed:
 
 ## History
 
+- **November 6, 2026:** API list endpoints now validate `limit` (default 50,
+  max 200) and `offset` with deterministic ordering, API sessions enforce
+  `API_STATEMENT_TIMEOUT_MS` (default 5000), and dashboard data is capped.
 - **September 8, 2026:** Integration suite passed (18) on an isolated test
   database. Legacy database backed up, rehearsed, and cut over to
   `realestate_dev_20260908`, with originals retained in `legacy_archive` and the
