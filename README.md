@@ -119,8 +119,8 @@ type-specific review; land is excluded. Missing square footage is left as
 unavailable rather than zero, so an otherwise eligible home can retain county
 context while remaining unavailable for comparable valuation.
 
-Shadow listings have `alert_eligible = false` in both current and historical
-records. They can be snapshotted and scored, but neither price-drop nor
+Unless live alerts are enabled (see [Live alerts](#live-alerts)), shadow
+listings have `alert_eligible = false` in both current and historical records. They can be snapshotted and scored, but neither price-drop nor
 potential-deal alert queries can select them. The command also deliberately
 skips saved-search evaluation and alert queueing.
 
@@ -218,6 +218,38 @@ docker compose --profile shadow up -d --build shadow-runner
 
 A failed ping is logged and does not fail the run.
 
+### Live alerts
+
+Live alerts to `#listing-alerts` are off unless `LIVE_ALERTS_ENABLED=true` is set
+in `.env`. Then:
+
+- The shadow sync marks RentCast listings alert-eligible. The shadow runner
+  still never queues or sends alerts and has no listing-alert webhook.
+- The `alert-worker` container (compose profile `alerts`) is the only service
+  given `SLACK_WEBHOOK_URL`. Every `ALERT_WORKER_INTERVAL_MINUTES` (default 15)
+  it checks the latest shadow run. Only after a successful run does it queue new
+  price drops and potential deals; it then delivers due outbox alerts, as
+  digests when more than 3 are due. Each cycle is idempotent.
+- A potential deal alerts once per listing, and again only if its list price
+  falls below the price last alerted. Re-scoring alone never repeats it.
+- RentCast potential deals also need a latest comparable valuation that is
+  `valued` and not `low` confidence; flagged listings (low confidence or no
+  valuation) never alert. Listings missing from the feed never alert.
+- A price drop needs two alert-eligible snapshots, so drops start from the
+  second run after enabling.
+- Cycle and delivery failures warn the ops channel once, with a recovery
+  message.
+
+```powershell
+docker compose --profile shadow up -d --build shadow-runner
+docker compose --profile alerts up -d --build alert-worker
+python -m app.alerts.live_alert_worker --once   # one manual cycle
+```
+
+To stop new alerts, set `LIVE_ALERTS_ENABLED=false` and run
+`docker compose --profile alerts stop alert-worker`; recreate the shadow runner
+so the next sync makes listings shadow-only again.
+
 ### Structured logging
 
 Shadow pipeline, scheduler, and RentCast sync logs go to stdout through
@@ -225,7 +257,7 @@ Shadow pipeline, scheduler, and RentCast sync logs go to stdout through
 `[run_id=12 provider=rentcast]` appended. Set `LOG_FORMAT=json` for one JSON
 object per line (`ts`, `level`, `logger`, `message`, plus `run_id`, `provider`,
 and request counts). Webhook, heartbeat, and API-key URLs are never logged.
-Alert-outbox logging is a follow-up once the digest changes land.
+Alert-outbox and alert-worker logging is a follow-up.
 
 Run the dedicated pipeline once, or start its three-day Docker scheduler:
 
@@ -236,7 +268,7 @@ python -m app.shadow.readiness
 ```
 
 The shadow runner has no listing-alert webhook in its container environment and
-imports no alert module. Scheduled runs do not call RentCast by default, so they reuse
+imports no alert module; live alerts are sent by the separate `alert-worker`. Scheduled runs do not call RentCast by default, so they reuse
 the listings and rent estimates already stored in Postgres while refreshing
 Redfin context, auditor sales, valuations, the review report, and
 `shadow_pipeline_runs`. Scheduled RentCast listing refreshes require an

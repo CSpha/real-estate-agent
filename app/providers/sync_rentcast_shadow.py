@@ -13,6 +13,7 @@ from app.transforms.score_listings_against_market import (
     score_listings_against_market,
 )
 from app.transforms.snapshot_listings import snapshot_current_listings
+from app.config import get_settings
 from app.db import get_engine
 from app.ops.logging import get_logger, log_context
 
@@ -202,19 +203,35 @@ def sync_rentcast_shadow(
     *,
     engine: Engine | None = None,
     provider_factory: Callable[[str], RentCastProvider] | None = None,
+    alert_eligible: bool | None = None,
 ) -> RentCastShadowSyncResult:
-    """Load the Wayne County pilot without making any listing alert-eligible."""
+    """Load the Wayne County pilot.
+
+    Listings are alert-eligible only when LIVE_ALERTS_ENABLED is set. This sync
+    never queues or sends alerts itself; the separate alert worker does that.
+    """
 
     with log_context(provider=SOURCE):
-        return _sync_rentcast_shadow(engine=engine, provider_factory=provider_factory)
+        return _sync_rentcast_shadow(
+            engine=engine,
+            provider_factory=provider_factory,
+            alert_eligible=alert_eligible,
+        )
 
 
 def _sync_rentcast_shadow(
     *,
     engine: Engine | None,
     provider_factory: Callable[[str], RentCastProvider] | None,
+    alert_eligible: bool | None,
 ) -> RentCastShadowSyncResult:
     engine = engine or get_engine()
+    if alert_eligible is None:
+        alert_eligible = get_settings().live_alerts_enabled
+    log.info(
+        "Synced listings will be "
+        f"{'alert-eligible (live alerts enabled)' if alert_eligible else 'shadow-only (not alert-eligible)'}."
+    )
     factory = provider_factory or (
         lambda city: RentCastProvider(
             city=city,
@@ -270,7 +287,7 @@ def _sync_rentcast_shadow(
     counts = ingest_records(
         records,
         engine=engine,
-        alert_eligible=False,
+        alert_eligible=alert_eligible,
         scoring_eligibility=is_scoring_eligible,
     )
     presence = mark_feed_presence(
@@ -297,6 +314,7 @@ def _sync_rentcast_shadow(
         current_changed=counts["current_changed"],
         snapshot_inserted=snapshot_inserted,
         market_scores_changed=market_scores_changed,
+        alert_eligible=alert_eligible,
         request_count=request_count,
         quarantined_count=len(ingest_errors),
         newly_missing_count=presence.newly_missing_count,
@@ -311,6 +329,8 @@ def main() -> None:
     for key, value in asdict(result).items():
         print(f"  {key}: {value}")
     print("Saved-search evaluation and alert queueing were not run.")
+    if result.alert_eligible:
+        print("Run python -m app.alerts.live_alert_worker --once to queue and send alerts.")
 
 
 if __name__ == "__main__":
