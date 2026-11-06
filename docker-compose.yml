@@ -103,8 +103,14 @@ services:
       PGPASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
       BACKUP_DIR: /backups
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-14}
+      BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-8}
+      # "true" only when BACKUP_OFFSITE_DIR is set and non-empty.
+      BACKUP_OFFSITE_ENABLED: ${BACKUP_OFFSITE_DIR:+true}
     volumes:
       - ./data/backups:/backups
+      # Unset -> an unused, ignored placeholder folder; the script skips it.
+      - ${BACKUP_OFFSITE_DIR:-./data/backups-offsite-disabled}:/offsite
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,7 +131,9 @@ services:
       BACKUP_VERIFY_INTERVAL_SECONDS: ${BACKUP_VERIFY_INTERVAL_SECONDS:-604800}
       BACKUP_VERIFY_RETRY_SECONDS: ${BACKUP_VERIFY_RETRY_SECONDS:-3600}
     volumes:
-      - ./data/backups:/backups:ro
+      # Writable only so a passed verification can record .last_verified,
+      # which retention uses to protect the newest verified dump.
+      - ./data/backups:/backups
     command: ["bash", "/app/scripts/verify_backups_loop.sh"]
     depends_on:
       postgres:

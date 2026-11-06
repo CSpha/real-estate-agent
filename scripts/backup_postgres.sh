@@ -12,6 +12,10 @@ DB_HOST="${DB_HOST:-postgres}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-${POSTGRES_DB:-realestate}}"
 DB_USER="${DB_USER:-${POSTGRES_USER:-realestate}}"
+KEEP_DAILY="${BACKUP_KEEP_DAILY:-14}"
+KEEP_WEEKLY="${BACKUP_KEEP_WEEKLY:-8}"
+OFFSITE_DIR="${BACKUP_OFFSITE_MOUNT:-/offsite}"
+RETENTION="python3 /app/scripts/backup_retention.py"
 
 case "$INTERVAL_SECONDS" in
   ''|*[!0-9]*) echo "BACKUP_INTERVAL_SECONDS must be a positive integer" >&2; exit 2 ;;
@@ -41,6 +45,26 @@ run_backup() {
   printf '%s\n' "$(date -u +%s)" > "$state_temp" || return 1
   mv -- "$state_temp" "$STATE_FILE" || return 1
   echo "Backup complete: $final_file"
+  post_backup "$final_file" || echo "Post-backup steps had problems; backup itself succeeded" >&2
+  return 0
+}
+
+# Runs only after a successful dump, so a failed backup never prunes anything.
+post_backup() {
+  local file="$1" name rc=0
+  name="$(basename -- "$file")"
+  $RETENTION prune "$BACKUP_DIR" --db "$DB_NAME" --newest "$name"     --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" || rc=1
+  if [[ "${BACKUP_OFFSITE_ENABLED:-}" != "true" ]]; then
+    echo "Off-machine copy skipped: BACKUP_OFFSITE_DIR is not set"
+    return $rc
+  fi
+  if $RETENTION copy "$file" "$OFFSITE_DIR"; then
+    $RETENTION prune "$OFFSITE_DIR" --db "$DB_NAME" --newest "$name"       --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY"       --verified-file-dir "$BACKUP_DIR" || rc=1
+  else
+    echo "Off-machine copy FAILED; skipping off-machine retention" >&2
+    rc=1
+  fi
+  return $rc
 }
 
 while true; do
