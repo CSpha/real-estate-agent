@@ -73,6 +73,8 @@ services:
       SLACK_OPS_WEBHOOK_URL: ${SLACK_OPS_WEBHOOK_URL:-}
       # Pinged after each successful run so an external monitor can warn when runs stop.
       SHADOW_HEARTBEAT_URL: ${SHADOW_HEARTBEAT_URL:-}
+      # text (default, human-readable) or json (one object per line).
+      LOG_FORMAT: ${LOG_FORMAT:-text}
     volumes:
       - ./data/shadow-runner:/app/data
     command:
