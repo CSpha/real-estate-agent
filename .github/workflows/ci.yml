@@ -19,7 +19,7 @@ jobs:
       - run: ruff check app tests scripts migrations
       - run: pytest -q tests --ignore=tests/integration
       # Compose requires these secrets; placeholders let CI validate the file.
-      - run: docker compose --profile shadow --profile backup config --quiet
+      - run: docker compose --profile shadow --profile backup --profile alerts config --quiet
         env:
           # Some Compose versions evaluate the nested POSTGRES_PASSWORD
           # fallback even when DB_PASSWORD is set, so provide both.
