@@ -319,7 +319,8 @@ unless their terms and an explicit agreement authorize it.
 - [x] External heartbeat that warns when Docker or the whole runner is down
       (`SHADOW_HEARTBEAT_URL`, pinged after each successful run)
 - [ ] Monitoring for repeated provider failures and database capacity
-- [ ] Off-machine backup copies and a retention policy
+- [x] Off-machine backup copies and a retention policy
+      (`BACKUP_OFFSITE_DIR`, `BACKUP_KEEP_DAILY`/`BACKUP_KEEP_WEEKLY`)
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
 - [ ] Validate and limit API pagination and expensive queries
 - [x] CI for migration round trips, integration tests, and secret scanning
@@ -537,6 +538,9 @@ Still needed:
   link, digest delivery for busy runs, and a test-channel command that sends
   real shadow events without touching the outbox (261 unit and 29 integration
   tests passed).
+- **November 6:** Backup retention (14 daily plus 8 weekly dumps, protecting the
+  newest and newest verified) and an optional off-machine copy folder
+  (`BACKUP_OFFSITE_DIR`, unset until chosen).
 
 ## External references
 
