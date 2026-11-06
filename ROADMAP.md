@@ -141,8 +141,9 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 - [ ] Evidence obtained for the 21 flagged listings; none has been cleared
 - [x] Slack delivery hardening (Phase 4): pacing, `Retry-After`, jitter,
       failure classification, potential deals through the outbox
-- [ ] Test-channel validation of real messages with `SLACK_TEST_WEBHOOK_URL`
-      (individual and digest messages sent November 5; awaiting review)
+- [x] Test-channel validation of real messages with `SLACK_TEST_WEBHOOK_URL`
+      (individual and digest messages sent November 5; layout approved
+      November 6)
 - [ ] Separate, explicit approval for production alert activation
 
 ## Near-term priorities
