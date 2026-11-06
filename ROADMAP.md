@@ -16,7 +16,7 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 | Rental underwriting | RentCast rent AVM, cash flow, cap rate, DSCR sizing, fixed-rate growth scenarios |
 | Mortgage-rate outlook | Multi-signal model and backtesting implemented; calibration rejected, not deployed |
 | Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI |
-| Alert promotion | **Blocked**: readiness passes, but listing freshness, transaction validity, and flagged-listing evidence are outstanding |
+| Alert promotion | **Approved November 6**: live alerts via the `alert-worker` once `LIVE_ALERTS_ENABLED=true`; flagged listings excluded from deal alerts; transaction validity still outstanding |
 
 Latest schema revision: `0021_listing_feed_presence`.
 
@@ -144,7 +144,10 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 - [x] Test-channel validation of real messages with `SLACK_TEST_WEBHOOK_URL`
       (individual and digest messages sent November 5; layout approved
       November 6)
-- [ ] Separate, explicit approval for production alert activation
+- [x] Separate, explicit approval for production alert activation
+      (approved November 6 with the transaction-validity and flagged-listing
+      gates open: flagged listings, meaning low-confidence or missing
+      valuations, are excluded from potential-deal alerts)
 
 ## Near-term priorities
 
@@ -311,8 +314,8 @@ unless their terms and an explicit agreement authorize it.
 - [x] CI for linting, unit tests, and Compose configuration
 - [x] Shadow deadline healthcheck on `shadow-runner` with a self-exiting
       watchdog so the restart policy recovers a missed deadline
-- [ ] Separately deployed production alert worker and alert-processing schedule
-      (after promotion)
+- [x] Separately deployed production alert worker and alert-processing schedule
+      (`alert-worker`, compose profile `alerts`, after each successful run)
 - [ ] Structured logging with run, provider, and event IDs in pipelines and workers
 - [x] Operational Slack warning for failed, overdue, or unreadable shadow runs,
       once per problem plus a recovery message (`SLACK_OPS_WEBHOOK_URL`)
@@ -537,6 +540,11 @@ Still needed:
   link, digest delivery for busy runs, and a test-channel command that sends
   real shadow events without touching the outbox (261 unit and 29 integration
   tests passed).
+- **November 6:** Test-channel layout approved. Live alerts approved: a separate
+  `alert-worker` queues and sends after each successful shadow run behind
+  `LIVE_ALERTS_ENABLED`; potential deals alert once per listing (again only at
+  a lower price) and skip flagged valuations (269 unit and 30 integration tests
+  passed).
 
 ## External references
 

@@ -1598,6 +1598,137 @@ def test_potential_deal_outbox_queues_and_delivers_once(postgres_engine):
     assert statuses == [("sent", expected)]
 
 
+def _insert_live_deal(conn, listing_id, *, list_price, confidence=None):
+    conn.execute(
+        text(
+            """
+            INSERT INTO listings_current (
+                source, source_listing_id, address, city, state, list_price,
+                alert_eligible, scoring_eligible
+            )
+            VALUES (
+                'live_deal_test', :listing_id, '1 Test St', 'Wooster', 'OH',
+                :list_price, TRUE, TRUE
+            )
+            """
+        ),
+        {"listing_id": listing_id, "list_price": list_price},
+    )
+    conn.execute(
+        text(
+            """
+            INSERT INTO listing_market_scores (
+                source, source_listing_id, county_name, address, city, state,
+                list_price, county_median_sale_price, price_vs_county_median,
+                pct_below_or_above_median, market_score, score_reason
+            )
+            VALUES (
+                'live_deal_test', :listing_id, 'Wayne', '1 Test St', 'Wooster',
+                'OH', :list_price, 200000, :list_price - 200000, -0.25, 90,
+                'Below the county median.'
+            )
+            """
+        ),
+        {"listing_id": listing_id, "list_price": list_price},
+    )
+    if confidence is not None:
+        conn.execute(
+            text(
+                """
+                INSERT INTO listing_comparable_valuations (
+                    source, source_listing_id, valuation_version, selection_version,
+                    as_of_date, input_fingerprint, status, selected_tier,
+                    available_comparable_count, included_comparable_count,
+                    confidence_score, confidence_label, calculation_json
+                )
+                VALUES (
+                    'live_deal_test', :listing_id, 'test', 'test', CURRENT_DATE,
+                    repeat('a', 64), 'valued', 'strict_zip', 5, 5, 60,
+                    :confidence, '{}'::jsonb
+                )
+                """
+            ),
+            {"listing_id": listing_id, "confidence": confidence},
+        )
+
+
+def _live_deal_ids(engine):
+    return sorted(
+        event["source_listing_id"]
+        for event in get_potential_deal_events(engine)
+        if event["source"] == "live_deal_test"
+    )
+
+
+def test_potential_deals_skip_flagged_and_alert_once_per_price(
+    postgres_engine, monkeypatch
+):
+    import app.alerts.send_potential_deal_alerts as deals_module
+
+    monkeypatch.setattr(
+        deals_module, "VALUATION_REQUIRED_SOURCES", ("rentcast", "live_deal_test")
+    )
+    with postgres_engine.begin() as conn:
+        _insert_live_deal(conn, "medium", list_price=150000, confidence="medium")
+        _insert_live_deal(conn, "low", list_price=150000, confidence="low")
+        _insert_live_deal(conn, "unvalued", list_price=150000)
+
+    # Low-confidence and unvalued listings are flagged and never alert.
+    assert _live_deal_ids(postgres_engine) == ["medium"]
+    assert enqueue_potential_deal_events(postgres_engine) == 1
+
+    # Re-scoring at the same price is not a new deal.
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE listing_market_scores "
+                "SET scored_at = CURRENT_TIMESTAMP + interval '3 days' "
+                "WHERE source = 'live_deal_test'"
+            )
+        )
+    assert _live_deal_ids(postgres_engine) == []
+    assert enqueue_potential_deal_events(postgres_engine) == 0
+
+    # A lower list price alerts again; a higher one does not.
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE listing_market_scores "
+                "SET list_price = 160000, scored_at = scored_at + interval '1 day' "
+                "WHERE source = 'live_deal_test' AND source_listing_id = 'medium'"
+            )
+        )
+    assert _live_deal_ids(postgres_engine) == []
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE listing_market_scores "
+                "SET list_price = 140000, scored_at = scored_at + interval '1 day' "
+                "WHERE source = 'live_deal_test' AND source_listing_id = 'medium'"
+            )
+        )
+    assert _live_deal_ids(postgres_engine) == ["medium"]
+
+    # Listings missing from the feed never alert.
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE listings_current SET missing_from_feed_since = CURRENT_TIMESTAMP "
+                "WHERE source = 'live_deal_test' AND source_listing_id = 'medium'"
+            )
+        )
+    assert _live_deal_ids(postgres_engine) == []
+
+    with postgres_engine.begin() as conn:
+        for table in (
+            "alert_outbox",
+            "listing_comparable_valuations",
+            "listing_market_scores",
+            "listings_current",
+        ):
+            conn.execute(text(f"DELETE FROM {table} WHERE source = 'live_deal_test'"))
+
+
 def test_rate_limited_alert_waits_for_retry_after(postgres_engine):
     with postgres_engine.begin() as conn:
         outbox_id = conn.scalar(

@@ -66,8 +66,10 @@ class OpsNotifier:
         state_path: Path = DEFAULT_STATE_PATH,
         send: Callable[[str], bool] = post_ops_message,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        label: str = "Shadow pipeline",
     ) -> None:
         self.state_path = state_path
+        self.label = label
         self._send = send
         self._now = now
         self._lock = threading.Lock()
@@ -80,7 +82,7 @@ class OpsNotifier:
             since = state.get("since") or self._now().isoformat()
             kind = state.get("problem") or kind
             sent = self._send(
-                f":warning: Shadow pipeline {kind} (since {since}). "
+                f":warning: {self.label} {kind} (since {since}). "
                 f"{_shorten(detail)}"
             )
             self._save({"problem": kind, "since": since, "notified": sent})
@@ -94,7 +96,7 @@ class OpsNotifier:
             sent = True
             if state.get("notified"):
                 sent = self._send(
-                    f":white_check_mark: Shadow pipeline recovered from "
+                    f":white_check_mark: {self.label} recovered from "
                     f"{state['problem']} (since {state['since']}). {_shorten(detail)}"
                 )
             self._save({})
