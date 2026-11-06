@@ -501,6 +501,17 @@ the live policy. To make a reviewed JSON threshold file available, run
 `--activate policy-name`. Creation validates the complete threshold schema and
 activation is transactional, so there is always one active policy.
 
+### Rental forecast assumptions
+
+`rental_assumption_policies` holds versioned rent-growth scenarios and the
+rent-to-cash-flow pass-through. `rental-assumptions-v1` equals the earlier
+hard-coded values; each `rental_forecast_scenarios` row records its
+`assumption_version`. Inspect with `python -m app.transforms.manage_rental_assumptions --show-active`;
+add a reviewed JSON file with `--create NAME --assumptions-file file.json` and
+switch with `--activate NAME` (transactional, one active version). There is no
+market rent history in the database yet, so `python -m app.transforms.derive_rental_assumptions`
+refuses and explains what data is needed rather than inventing growth rates.
+
 ## Database availability
 
 Postgres uses `restart: unless-stopped`, also applied to the existing container

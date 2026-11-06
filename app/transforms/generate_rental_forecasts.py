@@ -9,7 +9,8 @@ from decimal import Decimal
 from sqlalchemy import Engine, text
 
 from app.db import get_engine
-from app.market.rental_forecast import FORECAST_VERSION, SCENARIOS, forecast_rental_scenario
+from app.market.rental_assumptions import DEFAULT_ASSUMPTION_VERSION, load_active_assumptions
+from app.market.rental_forecast import FORECAST_VERSION, forecast_rental_scenario
 
 
 ANALYSES_SQL = text("""
@@ -22,10 +23,10 @@ ANALYSES_SQL = text("""
 INSERT_SQL = text("""
     INSERT INTO rental_forecast_scenarios (
         rental_analysis_id, forecast_version, scenario_name, annual_rent_growth_pct,
-        horizon_years, input_fingerprint, projection_json
+        horizon_years, input_fingerprint, projection_json, assumption_version
     ) VALUES (
         :rental_analysis_id, :forecast_version, :scenario_name, :annual_rent_growth_pct,
-        :horizon_years, :input_fingerprint, CAST(:projection_json AS JSONB)
+        :horizon_years, :input_fingerprint, CAST(:projection_json AS JSONB), :assumption_version
     ) ON CONFLICT ON CONSTRAINT uq_rental_forecast_input DO NOTHING
 """)
 
@@ -40,25 +41,31 @@ def generate_rental_forecasts(*, years: int = 5, engine: Engine | None = None) -
     engine = engine or get_engine()
     with engine.connect() as connection:
         analyses = [dict(row) for row in connection.execute(ANALYSES_SQL).mappings()]
+        assumptions = load_active_assumptions(connection)
+    print(f"Using rental assumption version {assumptions.version}")
     created = 0
     with engine.begin() as connection:
         for analysis in analyses:
-            for name, growth in SCENARIOS.items():
+            for name, growth in assumptions.scenarios.items():
                 projection = forecast_rental_scenario(
                     monthly_rent=Decimal(str(analysis["monthly_rent"])),
                     monthly_cash_flow=Decimal(str(analysis["monthly_cash_flow"])),
                     annual_rent_growth_pct=growth,
                     years=years,
+                    pass_through=assumptions.pass_through,
                 )
                 encoded = json.dumps(projection, default=str, separators=(",", ":"))
+                # Version 1 keeps its original fingerprint so existing rows are not
+                # duplicated; later assumption versions are part of the hash.
+                suffix = "" if assumptions.version == DEFAULT_ASSUMPTION_VERSION else f"|{assumptions.version}"
                 fingerprint = hashlib.sha256(
-                    f"{analysis['id']}|{FORECAST_VERSION}|{name}|{years}|{encoded}".encode()
+                    f"{analysis['id']}|{FORECAST_VERSION}|{name}|{years}|{encoded}{suffix}".encode()
                 ).hexdigest()
                 created += max(connection.execute(INSERT_SQL, {
                     "rental_analysis_id": analysis["id"], "forecast_version": FORECAST_VERSION,
                     "scenario_name": name, "annual_rent_growth_pct": growth,
                     "horizon_years": years, "input_fingerprint": fingerprint,
-                    "projection_json": encoded,
+                    "projection_json": encoded, "assumption_version": assumptions.version,
                 }).rowcount, 0)
     return ForecastGenerationResult(len(analyses), created)
 
