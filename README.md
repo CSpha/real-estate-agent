@@ -250,6 +250,15 @@ To stop new alerts, set `LIVE_ALERTS_ENABLED=false` and run
 `docker compose --profile alerts stop alert-worker`; recreate the shadow runner
 so the next sync makes listings shadow-only again.
 
+### Structured logging
+
+Shadow pipeline, scheduler, and RentCast sync logs go to stdout through
+`app/ops/logging.py`. Lines are readable text by default, with context such as
+`[run_id=12 provider=rentcast]` appended. Set `LOG_FORMAT=json` for one JSON
+object per line (`ts`, `level`, `logger`, `message`, plus `run_id`, `provider`,
+and request counts). Webhook, heartbeat, and API-key URLs are never logged.
+Alert-outbox and alert-worker logging is a follow-up.
+
 Run the dedicated pipeline once, or start its three-day Docker scheduler:
 
 ```powershell

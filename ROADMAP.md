@@ -316,7 +316,9 @@ unless their terms and an explicit agreement authorize it.
       watchdog so the restart policy recovers a missed deadline
 - [x] Separately deployed production alert worker and alert-processing schedule
       (`alert-worker`, compose profile `alerts`, after each successful run)
-- [ ] Structured logging with run, provider, and event IDs in pipelines and workers
+- [x] Structured logging with run, provider, and event IDs in pipelines and workers
+      (shadow pipeline, scheduler, RentCast sync; `LOG_FORMAT=json`; alert
+      outbox and worker logging is a follow-up)
 - [x] Operational Slack warning for failed, overdue, or unreadable shadow runs,
       once per problem plus a recovery message (`SLACK_OPS_WEBHOOK_URL`)
 - [x] External heartbeat that warns when Docker or the whole runner is down
@@ -495,6 +497,8 @@ Still needed:
 
 ## History
 
+- **November 6, 2026:** Added structured logging (`app/ops/logging.py`) with
+  run and provider context to the shadow pipeline, scheduler, and RentCast sync.
 - **September 8, 2026:** Integration suite passed (18) on an isolated test
   database. Legacy database backed up, rehearsed, and cut over to
   `realestate_dev_20260908`, with originals retained in `legacy_archive` and the
