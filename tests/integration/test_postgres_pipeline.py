@@ -1958,3 +1958,42 @@ def test_feed_presence_marks_and_clears_missing_listings(postgres_engine):
         with postgres_engine.begin() as conn:
             conn.execute(text("DELETE FROM listings_raw WHERE source = 'rentcast'"))
             conn.execute(text("DELETE FROM listings_current WHERE source = 'rentcast'"))
+
+
+def test_monitoring_sql_reads_run_history_and_capacity(postgres_engine):
+    import app.ops.monitoring as monitoring
+
+    with postgres_engine.begin() as conn:
+        conn.execute(text("DELETE FROM shadow_pipeline_runs WHERE source = 'rentcast'"))
+        for status, details, error in (
+            ("succeeded", '{"rentcast_requested": true, "rentcast": {}}', None),
+            ("succeeded", "{}", None),
+            ("failed", '{"rentcast_requested": true}', "RentCastAPIError: 503"),
+            ("failed", '{"rentcast_requested": true}', "RentCastAPIError: 503"),
+        ):
+            conn.execute(
+                text(
+                    "INSERT INTO shadow_pipeline_runs (source, status, error_message, details_json) "
+                    "VALUES ('rentcast', :status, :error, CAST(:details AS JSONB))"
+                ),
+                {"status": status, "error": error, "details": details},
+            )
+
+    try:
+        runs = monitoring.fetch_recent_rentcast_runs(postgres_engine, 10)
+        assert [r["requested"] for r in runs] == [True, True, False, True]
+        assert monitoring.repeated_failure_detail(runs, 2) is not None
+        assert monitoring.repeated_failure_detail(runs, 3) is None
+
+        assert monitoring.fetch_database_size(postgres_engine) > 0
+        largest = dict(monitoring.fetch_largest_tables(postgres_engine, 100))
+        assert "shadow_pipeline_runs" in largest
+        counts = monitoring.fetch_key_table_counts(postgres_engine)
+        assert counts["shadow_pipeline_runs"] == 4
+        assert counts["listings_current"] is not None
+        assert monitoring.fetch_key_table_counts(postgres_engine, ("no_such_table",)) == {
+            "no_such_table": None
+        }
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(text("DELETE FROM shadow_pipeline_runs WHERE source = 'rentcast'"))

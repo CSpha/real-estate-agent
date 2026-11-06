@@ -12,6 +12,11 @@ from sqlalchemy import text
 from app.db import get_engine
 
 from app.ops.heartbeat import ping_heartbeat
+from app.ops.monitoring import (
+    MonitorNotifiers,
+    check_database_capacity,
+    check_provider_health,
+)
 from app.ops.notify import OpsNotifier
 from app.providers.rentcast import DEFAULT_MAX_RETRIES
 from app.providers.sync_rentcast_shadow import PILOT_CITIES
@@ -90,6 +95,50 @@ def rentcast_budget_allows(*, engine, now: datetime | None = None) -> tuple[bool
             f"within {min_hours} hours"
         )
     return True, f"{used} of {limit} monthly requests used before this run"
+
+
+def monitor_after_run(*, engine=None, notifiers: MonitorNotifiers | None = None) -> None:
+    """Check provider health and database capacity; never raises.
+
+    Monitoring failures are logged and ignored so they cannot break a run.
+    """
+    try:
+        engine = engine or get_engine()
+        notifiers = notifiers or MonitorNotifiers()
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        limit = _nonnegative_int("SHADOW_RENTCAST_MONTHLY_REQUEST_LIMIT", 40)
+        with engine.connect() as connection:
+            row = (
+                connection.execute(
+                    RENTCAST_USAGE_SQL,
+                    {
+                        "month_start": month_start,
+                        "requests_per_run": RENTCAST_REQUESTS_PER_RUN,
+                        "max_requests_per_run": RENTCAST_MAX_REQUESTS_PER_RUN,
+                    },
+                )
+                .mappings()
+                .one()
+            )
+        used = int(row["requests_this_month"] or 0)
+        check_provider_health(
+            engine,
+            notifiers,
+            requests_used=used,
+            request_limit=limit,
+            last_attempt_at=row["last_attempt_at"],
+            calls_enabled=rentcast_api_calls_enabled(),
+            budget_blocked=used + RENTCAST_MAX_REQUESTS_PER_RUN > limit,
+            min_hours=_positive_hours("SHADOW_RENTCAST_MIN_HOURS", 60),
+            now=now,
+        )
+    except Exception as exc:
+        print(f"Provider monitoring failed: {type(exc).__name__}: {exc}", flush=True)
+    try:
+        check_database_capacity(engine or get_engine(), notifiers or MonitorNotifiers())
+    except Exception as exc:
+        print(f"Capacity monitoring failed: {type(exc).__name__}: {exc}", flush=True)
 
 
 def run_scheduled_shadow_pipeline():
@@ -261,6 +310,7 @@ def main() -> None:
                 f"{retry_seconds // 3600} hour(s); see the shadow-runner logs.",
             )
             delay = retry_seconds
+            monitor_after_run()
         else:
             print(
                 "Shadow run succeeded: "
@@ -268,6 +318,7 @@ def main() -> None:
             )
             notifier.resolved(f"Run {result['run_id']} succeeded.")
             ping_heartbeat()
+            monitor_after_run()
             delay = 0
         # Also back off when a failure happens before a run can be recorded.
         if delay:
