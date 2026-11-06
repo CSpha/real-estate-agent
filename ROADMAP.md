@@ -318,7 +318,7 @@ unless their terms and an explicit agreement authorize it.
       once per problem plus a recovery message (`SLACK_OPS_WEBHOOK_URL`)
 - [x] External heartbeat that warns when Docker or the whole runner is down
       (`SHADOW_HEARTBEAT_URL`, pinged after each successful run)
-- [ ] Monitoring for repeated provider failures and database capacity
+- [x] Monitoring for repeated provider failures and database capacity
 - [ ] Off-machine backup copies and a retention policy
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
 - [ ] Validate and limit API pagination and expensive queries
@@ -537,6 +537,9 @@ Still needed:
   link, digest delivery for busy runs, and a test-channel command that sends
   real shadow events without touching the outbox (261 unit and 29 integration
   tests passed).
+- **November 6:** Post-run ops monitoring for repeated RentCast failures,
+  unexplained skips, request budget at 80%, and database size, plus a read-only
+  `python -m app.ops.capacity` report.
 
 ## External references
 
