@@ -34,8 +34,9 @@ def test_worker_only_delivers_existing_outbox_rows(monkeypatch):
     )
     calls = []
 
-    def fake_deliver(webhook_url, formatters, *, send, engine, limit):
+    def fake_deliver(webhook_url, formatters, *, send, engine, limit, summarizers):
         calls.append((webhook_url, set(formatters), send, engine, limit))
+        assert set(summarizers) == set(formatters)
         return {"sent": 2, "failed": 1}
 
     monkeypatch.setattr(worker_module, "deliver_pending_alerts", fake_deliver)

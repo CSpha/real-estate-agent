@@ -7,8 +7,12 @@ import time
 from sqlalchemy import Engine
 
 from app.alerts import send_potential_deal_alerts, send_price_drop_alerts
+from app.alerts.formatting import build_digest_message
 from app.alerts.outbox import (
+    DIGEST_SIZE,
+    DIGEST_THRESHOLD,
     MIN_SEND_INTERVAL_SECONDS,
+    _payload,
     deliver_pending_alerts,
     preview_due_alerts,
 )
@@ -19,6 +23,10 @@ from app.config import get_settings, require_setting
 FORMATTERS = {
     "price_drop": send_price_drop_alerts.format_slack_message,
     "potential_deal": send_potential_deal_alerts.format_slack_message,
+}
+SUMMARIZERS = {
+    "price_drop": send_price_drop_alerts.summarize_event,
+    "potential_deal": send_potential_deal_alerts.summarize_event,
 }
 
 
@@ -37,6 +45,7 @@ def process_alert_outbox(
         send=send_to_slack,
         engine=engine,
         limit=limit,
+        summarizers=SUMMARIZERS,
     )
     print(
         "Alert delivery complete: "
@@ -65,8 +74,9 @@ def preview_alert_outbox(
             "SLACK_TEST_WEBHOOK_URL",
         )
     counts = {"previewed": 0, "invalid": 0, "test_sent": 0}
-    for index, (alert, message, error) in enumerate(
-        preview_due_alerts(FORMATTERS, engine=engine, limit=limit)
+    valid = []
+    for alert, message, error in preview_due_alerts(
+        FORMATTERS, engine=engine, limit=limit
     ):
         label = f"#{alert['id']} {alert['alert_type']} {alert['source_listing_id']}"
         if error is not None:
@@ -74,6 +84,25 @@ def preview_alert_outbox(
             counts["invalid"] += 1
             continue
         counts["previewed"] += 1
+        valid.append((alert, message, label))
+    # Mirror production delivery: several due alerts go out as digests.
+    if len(valid) > DIGEST_THRESHOLD:
+        valid = [
+            (
+                None,
+                build_digest_message(
+                    [(alert["alert_type"], _payload(alert)) for alert, _m, _l in chunk],
+                    SUMMARIZERS,
+                ),
+                f"digest of {len(chunk)}: "
+                + ", ".join(label for _a, _m, label in chunk),
+            )
+            for chunk in (
+                valid[start : start + DIGEST_SIZE]
+                for start in range(0, len(valid), DIGEST_SIZE)
+            )
+        ]
+    for index, (_alert, message, label) in enumerate(valid):
         if test_webhook_url is None:
             print(f"PREVIEW {label}\n{json.dumps(message, indent=2)}")
             continue

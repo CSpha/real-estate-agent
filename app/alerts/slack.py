@@ -8,6 +8,8 @@ import requests
 
 # Slack truncates message text longer than 4,000 characters.
 MAX_TEXT_LENGTH = 4000
+# Block Kit messages allow at most 50 blocks.
+MAX_BLOCKS = 50
 REQUEST_TIMEOUT_SECONDS = 30
 
 # Webhook-level errors mean every later message would fail the same way.
@@ -52,6 +54,14 @@ def validate_payload(payload: dict[str, Any]) -> None:
     if len(text) > MAX_TEXT_LENGTH:
         raise SlackDeliveryError(
             f"Slack payload text exceeds {MAX_TEXT_LENGTH} characters",
+            retryable=False,
+        )
+    blocks = payload.get("blocks")
+    if blocks is not None and (
+        not isinstance(blocks, list) or not 0 < len(blocks) <= MAX_BLOCKS
+    ):
+        raise SlackDeliveryError(
+            f"Slack payload blocks must be a list of 1-{MAX_BLOCKS} blocks",
             retryable=False,
         )
 

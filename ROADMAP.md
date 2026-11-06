@@ -141,13 +141,15 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 - [ ] Evidence obtained for the 21 flagged listings; none has been cleared
 - [x] Slack delivery hardening (Phase 4): pacing, `Retry-After`, jitter,
       failure classification, potential deals through the outbox
-- [ ] Test-channel validation of real messages with `SLACK_TEST_WEBHOOK_URL`
+- [x] Test-channel validation of real messages with `SLACK_TEST_WEBHOOK_URL`
+      (individual and digest messages sent November 5; layout approved
+      November 6)
 - [ ] Separate, explicit approval for production alert activation
 
 ## Near-term priorities
 
-1. Confirm the October 31 run (18:18 UTC) fetches RentCast listings and
-   records `rentcast_requested`; watch monthly usage in the scheduler logs.
+1. Watch monthly RentCast usage in the scheduler logs (the October 31 and
+   November 3 runs each fetched listings with 3 requests).
 2. Keep Docker Desktop running (start at sign-in) and review each new report in
    `data/shadow-runner/`.
 3. Obtain a transaction-level valid-sales export: download a sample from the
@@ -159,9 +161,8 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 5. Decide whether to add a Fredericksburg abbreviation mapping to the auditor
    parser. Keep multi-value property records quarantined until a deterministic
    parcel/dwelling rule is documented.
-6. Create a Slack test channel webhook, set `SLACK_TEST_WEBHOOK_URL`, and
-   validate real messages with `process_alert_outbox --test-channel`. Then
-   decide on Block Kit formatting and digest delivery (Phase 4).
+6. Review the formatted and digest test messages in the Slack test channel
+   (`python -m app.alerts.send_test_alerts [--digest]`) and adjust the layout.
 7. Keep the computer awake or accept wake-time delays; shadow runs, backups,
    and ops warnings pause while it sleeps.
 8. Add geographic bounding-box criteria once provider coordinates are available.
@@ -279,11 +280,14 @@ unless their terms and an explicit agreement authorize it.
 - [x] Route potential-deal alerts through the outbox (queued only by their
       explicit command, not by `app.run_pipeline`)
 - [x] Dry-run and test-channel worker modes that leave the outbox unchanged
-- [ ] Validate real messages in a Slack test channel
-- [ ] Slack Block Kit formatting: address and listing URL, permitted primary
-      photo, current and previous price, match reasons, key attributes, and
-      data source/attribution
-- [ ] Digest delivery to avoid flooding a channel
+- [x] Send real messages to a Slack test channel
+      (`python -m app.alerts.send_test_alerts`; first sent November 5)
+- [x] Slack Block Kit formatting: address with map link, current and previous
+      price, change, county median comparison, score reason, listing ID, and a
+      plain-text fallback
+- [ ] Block Kit additions that need provider fields: listing URL, permitted
+      primary photo, key attributes, and data source/attribution
+- [x] Digest delivery: more than 3 due alerts go out as digests of up to 10
 
 ### Acceptance criteria
 
@@ -531,6 +535,10 @@ Still needed:
   completed on wake after the computer slept through its due time.
 - **November 5:** External heartbeat after each successful shadow run
   (`SHADOW_HEARTBEAT_URL`, Healthchecks.io: 3-day period, 7-hour grace).
+  Slack Block Kit alert layout with consistent currency formatting and a map
+  link, digest delivery for busy runs, and a test-channel command that sends
+  real shadow events without touching the outbox (261 unit and 29 integration
+  tests passed).
 
 ## External references
 

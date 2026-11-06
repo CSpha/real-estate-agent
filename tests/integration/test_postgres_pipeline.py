@@ -24,7 +24,7 @@ from app.alerts.send_price_drop_alerts import (
     record_alert,
 )
 from app.alerts.outbox import deliver_pending_alerts
-from app.alerts.process_alert_outbox import FORMATTERS
+from app.alerts.process_alert_outbox import FORMATTERS, SUMMARIZERS
 from app.alerts.send_potential_deal_alerts import (
     enqueue_potential_deal_events,
     get_potential_deal_events,
@@ -1658,6 +1658,112 @@ def test_rate_limited_alert_waits_for_retry_after(postgres_engine):
         ).one()
     assert row.status == "retryable_failed"
     assert row.wait >= 590
+
+
+def _queue_digest_rows(engine, prefix: str, count: int) -> list[int]:
+    ids = []
+    with engine.begin() as conn:
+        for index in range(count):
+            ids.append(
+                conn.scalar(
+                    text(
+                        """
+                        INSERT INTO alert_outbox (
+                            alert_type, source, source_listing_id,
+                            event_timestamp, payload_json
+                        )
+                        VALUES (
+                            'price_drop', 'sample_feed', :listing_id,
+                            TIMESTAMPTZ '2026-11-05 00:00:00+00',
+                            CAST(:payload_json AS JSONB)
+                        )
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "listing_id": f"{prefix}-{index}",
+                        "payload_json": json.dumps(
+                            {
+                                "address": f"{index} Digest St",
+                                "city": "Wooster",
+                                "state": "OH",
+                                "previous_price": "200000",
+                                "current_price": "190000",
+                                "price_change": "-10000",
+                                "price_change_pct": "-5.00",
+                                "source_listing_id": f"{prefix}-{index}",
+                            }
+                        ),
+                    },
+                )
+            )
+    return ids
+
+
+def _outbox_rows(engine, ids: list[int]):
+    with engine.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT id, status, attempt_count FROM alert_outbox "
+                "WHERE id = ANY(:ids) ORDER BY id"
+            ),
+            {"ids": ids},
+        ).all()
+
+
+def test_many_due_alerts_are_delivered_as_one_digest(postgres_engine):
+    ids = _queue_digest_rows(postgres_engine, "digest", 5)
+    sent = []
+    try:
+        counts = deliver_pending_alerts(
+            "https://example.invalid/test-webhook",
+            FORMATTERS,
+            send=lambda _url, payload: sent.append(payload),
+            engine=postgres_engine,
+            min_send_interval_seconds=0,
+            summarizers=SUMMARIZERS,
+        )
+        assert counts == {"sent": 5, "failed": 0}
+        assert len(sent) == 1
+        assert sent[0]["text"].startswith("5 listing alerts")
+        assert {row.status for row in _outbox_rows(postgres_engine, ids)} == {"sent"}
+        with postgres_engine.connect() as conn:
+            assert conn.scalar(
+                text(
+                    "SELECT COUNT(*) FROM alerts_sent "
+                    "WHERE source_listing_id LIKE 'digest-%'"
+                )
+            ) == 5
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(text("DELETE FROM alert_outbox WHERE id = ANY(:ids)"), {"ids": ids})
+            conn.execute(
+                text("DELETE FROM alerts_sent WHERE source_listing_id LIKE 'digest-%'")
+            )
+
+
+def test_unusable_webhook_releases_the_rest_of_a_digest(postgres_engine):
+    ids = _queue_digest_rows(postgres_engine, "release", 5)
+
+    def unusable(_url, _payload):
+        raise SlackDeliveryError("404", retryable=False, webhook_unusable=True)
+
+    try:
+        counts = deliver_pending_alerts(
+            "https://example.invalid/test-webhook",
+            FORMATTERS,
+            send=unusable,
+            engine=postgres_engine,
+            summarizers=SUMMARIZERS,
+        )
+        assert counts == {"sent": 0, "failed": 1}
+        rows = _outbox_rows(postgres_engine, ids)
+        assert [(row.status, row.attempt_count) for row in rows] == [
+            ("permanent_failed", 1)
+        ] + [("pending", 0)] * 4
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(text("DELETE FROM alert_outbox WHERE id = ANY(:ids)"), {"ids": ids})
 
 
 def _provider_listing(source: str, listing_id: str, **overrides) -> dict:

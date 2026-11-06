@@ -1,8 +1,19 @@
 import json
-from decimal import Decimal
 
 from sqlalchemy import Engine, text
 
+from app.alerts.formatting import (
+    address_link,
+    context_block,
+    escape,
+    fields_block,
+    full_address,
+    header_block,
+    money,
+    percent,
+    section_block,
+    to_decimal,
+)
 from app.db import get_engine
 
 
@@ -50,32 +61,25 @@ def get_potential_deal_events(engine: Engine | None = None):
         return conn.execute(query).mappings().all()
 
 
-def _decimal(value):
-    # Outbox payloads store numbers as strings; direct events use Decimal.
-    return None if value is None or value == "None" else Decimal(str(value))
-
-
 def format_currency(value):
-    value = _decimal(value)
-    if value is None:
-        return "N/A"
-
-    return f"${value:,.0f}"
+    return money(value)
 
 
 def format_percent(value):
-    value = _decimal(value)
-    if value is None:
-        return "N/A"
+    return percent(value, fraction=True)
 
-    return f"{value * 100:.2f}%"
+
+def _vs_median(event):
+    return (
+        f"{format_currency(event['price_vs_county_median'])} "
+        f"({format_percent(event['pct_below_or_above_median'])})"
+    )
 
 
 def format_slack_message(event):
     return {
         "text": (
-            "Potential deal detected\n"
-            f"{event['address']}, {event['city']}, {event['state']}\n"
+            f"Potential deal: {full_address(event)}\n"
             f"County: {event['county_name']}\n"
             f"List price: {format_currency(event['list_price'])}\n"
             f"County median sale price: {format_currency(event['county_median_sale_price'])}\n"
@@ -84,8 +88,40 @@ def format_slack_message(event):
             f"Market score: {event['market_score']}\n"
             f"Reason: {event['score_reason']}\n"
             f"Listing ID: {event['source_listing_id']}"
-        )
+        ),
+        "blocks": [
+            header_block(f":moneybag: Potential deal: {event['address']}"),
+            section_block(f"*{address_link(event)}*"),
+            fields_block(
+                [
+                    ("List price", format_currency(event["list_price"])),
+                    (
+                        f"{event['county_name']} County median",
+                        format_currency(event["county_median_sale_price"]),
+                    ),
+                    ("vs. median", _vs_median(event)),
+                    ("Market score", escape(event["market_score"])),
+                ]
+            ),
+            section_block(f"_{escape(event['score_reason'])}_"),
+            context_block(f"Listing ID {escape(event['source_listing_id'])}"),
+        ],
     }
+
+
+def summarize_event(event):
+    """One digest line: (mrkdwn, plain text)."""
+    pct = to_decimal(event["pct_below_or_above_median"])
+    position = "below" if pct is not None and pct < 0 else "above"
+    magnitude = format_percent(abs(pct)) if pct is not None else "N/A"
+    detail = (
+        f"{format_currency(event['list_price'])}, {magnitude} {position} the "
+        f"county median, score {event['market_score']}"
+    )
+    return (
+        f":moneybag: *{address_link(event)}*  {escape(detail)}",
+        f"Potential deal: {full_address(event)}, {detail}",
+    )
 
 
 def _optional_str(value):
