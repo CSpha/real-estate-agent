@@ -161,11 +161,9 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 5. Decide whether to add a Fredericksburg abbreviation mapping to the auditor
    parser. Keep multi-value property records quarantined until a deterministic
    parcel/dwelling rule is documented.
-6. Review the formatted and digest test messages in the Slack test channel
-   (`python -m app.alerts.send_test_alerts [--digest]`) and adjust the layout.
-7. Keep the computer awake or accept wake-time delays; shadow runs, backups,
+6. Keep the computer awake or accept wake-time delays; shadow runs, backups,
    and ops warnings pause while it sleeps.
-8. Add geographic bounding-box criteria once provider coordinates are available.
+7. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
 
