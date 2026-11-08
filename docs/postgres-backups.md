@@ -7,8 +7,24 @@ published by atomic rename; failed dumps retry after five minutes. The last
 completion timestamp is persisted so a restart preserves the daily deadline.
 Set `BACKUP_INTERVAL_SECONDS` to change the default 86400-second interval.
 
-No retention deletion is enabled. Monitor disk use and copy backups to separate
-storage for protection against loss of this computer. These dumps contain the
+## Retention and off-machine copies
+
+After each successful backup the worker prunes old dumps (never after a failed
+one): it keeps the newest `BACKUP_KEEP_DAILY` dumps (default 14) and the newest
+dump of each of the last `BACKUP_KEEP_WEEKLY` ISO weeks (default 8). The newest
+dump and the newest verified dump (recorded in `.last_verified` by
+`backup-verify`) are never deleted. Every kept and deleted file is logged.
+Only `<database>_<timestamp>.dump` files are considered.
+
+Set `BACKUP_OFFSITE_DIR` in `.env` to a host folder (a synced OneDrive/Dropbox/
+Drive folder, or an external or network drive) to also copy each dump there
+(temp file, then rename) and apply the same retention. When unset, Compose
+mounts an unused placeholder folder (`data/backups-offsite-disabled`) and the
+worker logs that the copy was skipped. If the copy fails, the local backup still
+succeeds and the failure is logged. After changing these settings run
+`docker compose --profile backup up -d --build`.
+
+Monitor disk use. These dumps contain the
 application data and should be treated as private. They cover the configured
 application database, not other databases or cluster roles.
 

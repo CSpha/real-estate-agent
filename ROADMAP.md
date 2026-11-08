@@ -327,7 +327,8 @@ unless their terms and an explicit agreement authorize it.
 - [x] External heartbeat that warns when Docker or the whole runner is down
       (`SHADOW_HEARTBEAT_URL`, pinged after each successful run)
 - [x] Monitoring for repeated provider failures and database capacity
-- [ ] Off-machine backup copies and a retention policy
+- [x] Off-machine backup copies and a retention policy
+      (`BACKUP_OFFSITE_DIR`, `BACKUP_KEEP_DAILY`/`BACKUP_KEEP_WEEKLY`)
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
 - [x] Validate and limit API pagination and expensive queries
 - [x] CI for migration round trips, integration tests, and secret scanning
@@ -562,6 +563,9 @@ Still needed:
 - **November 6:** Rental forecast assumptions moved into the versioned
   `rental_assumption_policies` table (revision 0022, version 1 = prior values).
   Rent-history derivation is a documented refusing stub pending data.
+- **November 6:** Backup retention (14 daily plus 8 weekly dumps, protecting the
+  newest and newest verified) and an optional off-machine copy folder
+  (`BACKUP_OFFSITE_DIR`, unset until chosen).
 - **November 8:** First live alerts: run 39 queued 11 potential deals, sent
   as two digests with no failures. The valuation backfill still skipped
   alert-eligible listings, so run 39 stored 0 supported valuations and deal

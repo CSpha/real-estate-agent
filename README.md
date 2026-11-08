@@ -613,4 +613,6 @@ and retries failures hourly. Start the profile with `docker compose --profile ba
 
 Daily backups and isolated restore verification are described in
 [Postgres backups](docs/postgres-backups.md). The first backup is immediate;
-subsequent backups preserve their 24-hour deadline across restarts.
+subsequent backups preserve their 24-hour deadline across restarts. Old dumps are
+pruned (`BACKUP_KEEP_DAILY`/`BACKUP_KEEP_WEEKLY`) and an optional off-machine copy
+is made when `BACKUP_OFFSITE_DIR` is set; see that document.

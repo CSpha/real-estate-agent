@@ -13,6 +13,11 @@ from pathlib import Path
 import psycopg2
 from psycopg2 import sql
 
+try:
+    from backup_retention import write_verified
+except ImportError:  # run from the repo, not the container
+    from app.ops.backup_retention import write_verified
+
 
 def env(name: str, fallback: str) -> str:
     return os.environ.get(name) or fallback
@@ -139,6 +144,10 @@ def main() -> int:
             f"{len(actual[0])} tables, {sum(actual[0].values())} rows, "
             f"{len(actual[1])} indexes, {len(actual[2])} constraint names"
         )
+        try:
+            write_verified(backup_dir, dump.name)
+        except OSError as exc:
+            print(f"Could not record verified dump marker: {exc}", file=sys.stderr)
         return 0
     except (
         OSError,
