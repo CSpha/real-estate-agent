@@ -18,6 +18,7 @@ from app.ops.monitoring import (
     check_database_capacity,
     check_provider_health,
 )
+from app.market.mortgage_rates import refresh_pmms_if_stale
 from app.ops.notify import OpsNotifier
 from app.providers.rentcast import DEFAULT_MAX_RETRIES
 from app.providers.sync_rentcast_shadow import PILOT_CITIES
@@ -97,6 +98,32 @@ def rentcast_budget_allows(*, engine, now: datetime | None = None) -> tuple[bool
             f"within {min_hours} hours"
         )
     return True, f"{used} of {limit} monthly requests used before this run"
+
+
+def pmms_refresh_enabled() -> bool:
+    """Refresh PMMS mortgage rates weekly unless explicitly turned off."""
+
+    return os.getenv("SHADOW_PMMS_REFRESH_ENABLED", "true").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def refresh_pmms_before_run(*, engine=None, refresh=refresh_pmms_if_stale) -> None:
+    """Refresh PMMS rates when due; never raises.
+
+    The download is free and public. A failure is logged and ignored so it
+    cannot fail or delay a shadow run (the stored rates simply stay as they are).
+    """
+    if not pmms_refresh_enabled():
+        log.info("PMMS refresh is disabled: SHADOW_PMMS_REFRESH_ENABLED is off.")
+        return
+    try:
+        refresh(engine=engine or get_engine())
+    except Exception as exc:
+        log.warning("PMMS refresh failed: %s: %s", type(exc).__name__, exc)
 
 
 def monitor_after_run(*, engine=None, notifiers: MonitorNotifiers | None = None) -> None:
@@ -308,6 +335,7 @@ def main() -> None:
         log.info("Next shadow attempt due at %s", deadline.isoformat())
         sleep_until(deadline)
         log.info("Starting shadow run at %s", datetime.now(timezone.utc).isoformat())
+        refresh_pmms_before_run()
         try:
             result = run_scheduled_shadow_pipeline()
         except Exception as exc:

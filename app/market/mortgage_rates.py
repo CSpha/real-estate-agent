@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import io
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -14,11 +14,17 @@ import requests
 from sqlalchemy import Engine, text
 
 from app.db import get_engine
+from app.ops.logging import get_logger
 
+log = get_logger(__name__)
 
 PMMS_HISTORY_URL = "https://www.freddiemac.com/pmms/docs/PMMS_history.csv"
 PMMS_SOURCE = "freddie_mac_pmms"
 PMMS_METHODOLOGY_CHANGE = date(2022, 11, 17)
+# PMMS publishes weekly, so a week-old ingestion is due for a check. Past this
+# many days without a successful ingestion the data is worth a warning.
+PMMS_REFRESH_MIN_AGE_DAYS = 6
+PMMS_STALE_WARNING_DAYS = 21
 PRODUCT_COLUMNS = {
     "30_year_fixed": ("pmms30", "pmms30p"),
     "15_year_fixed": ("pmms15", "pmms15p"),
@@ -62,6 +68,14 @@ UPSERT_RATE_SQL = text(
         EXCLUDED.methodology_version,
         EXCLUDED.source_url
     )
+    """
+)
+
+LATEST_PMMS_SQL = text(
+    """
+    SELECT MAX(ingested_at), MAX(observation_date)
+    FROM mortgage_rate_observations
+    WHERE source = :source
     """
 )
 
@@ -201,6 +215,63 @@ def get_rate_trend(
             {"source": PMMS_SOURCE, "product_type": product_type},
         ).mappings().all()
     return calculate_rate_trend(rows, product_type=product_type)
+
+
+def refresh_pmms_if_stale(
+    *,
+    engine: Engine | None = None,
+    now: datetime | None = None,
+    min_age_days: int = PMMS_REFRESH_MIN_AGE_DAYS,
+    fetch: Callable[[], str] = fetch_pmms_csv,
+) -> dict[str, Any]:
+    """Download and load PMMS history unless it was ingested recently.
+
+    Freshness is judged by the newest `ingested_at`, not the newest observation
+    date, so a week Freddie Mac has not published yet does not look "stale"
+    forever. `ingested_at` only moves when a row is inserted or changed, so
+    until new data appears a due check repeats on each call; callers run it
+    at most a few times a week. Download and parse errors propagate to the
+    caller; a CSV with no usable rows is logged and left alone.
+    """
+    engine = engine or get_engine()
+    now = now or datetime.now(timezone.utc)
+    with engine.connect() as conn:
+        last_ingested_at, newest_date = conn.execute(LATEST_PMMS_SQL, {"source": PMMS_SOURCE}).one()
+
+    if last_ingested_at is not None:
+        age = now - last_ingested_at
+        if age < timedelta(days=min_age_days):
+            log.info(
+                "PMMS refresh skipped: last ingested %.1f days ago, under the %s-day minimum.",
+                age.total_seconds() / 86400,
+                min_age_days,
+            )
+            return {"status": "skipped", "newest_observation_date": newest_date}
+        reason = f"last ingested {age.days} days ago"
+    else:
+        reason = "no PMMS data stored yet"
+    log.info("PMMS refresh starting: %s.", reason)
+
+    counts = load_pmms_csv(fetch(), engine)
+    if counts["received"] == 0:
+        log.warning("PMMS refresh found no usable rows in the downloaded CSV; nothing was changed.")
+        return {"status": "no_rows", **counts, "newest_observation_date": newest_date}
+
+    with engine.connect() as conn:
+        _, newest_date = conn.execute(LATEST_PMMS_SQL, {"source": PMMS_SOURCE}).one()
+    log.info(
+        "PMMS refresh complete: %s observations received, %s inserted or changed, newest observation %s.",
+        counts["received"],
+        counts["inserted_or_changed"],
+        newest_date.isoformat() if newest_date else "none",
+    )
+    if newest_date is not None and (now.date() - newest_date).days > PMMS_STALE_WARNING_DAYS:
+        log.warning(
+            "PMMS data is stale: newest observation %s is more than %s days old.",
+            newest_date.isoformat(),
+            PMMS_STALE_WARNING_DAYS,
+        )
+    return {"status": "refreshed", **counts, "newest_observation_date": newest_date}
 
 
 def _parse_date(raw_value: Any, row_number: int) -> date:

@@ -50,7 +50,11 @@ from app.market.mortgage_rate_outlook import generate_and_store_outlooks
 from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
 )
-from app.market.mortgage_rates import get_rate_trend, load_pmms_csv
+from app.market.mortgage_rates import (
+    get_rate_trend,
+    load_pmms_csv,
+    refresh_pmms_if_stale,
+)
 from app.providers.rentcast_rent import RentEstimate
 from app.providers.fixture import FixtureProvider
 from app.providers.sync import sync_provider
@@ -1203,6 +1207,60 @@ def test_mortgage_rate_history_is_idempotent(postgres_engine):
     assert trend.current_rate == Decimal("6.58")
     assert trend.change_4_weeks == Decimal("0.08")
     assert trend.direction == "roughly_stable"
+
+
+@pytest.fixture
+def empty_pmms_table(postgres_engine):
+    """Start with no PMMS rows, then restore what other tests in this module loaded."""
+    columns = (
+        "source, product_type, observation_date, rate_percent, points, "
+        "methodology_version, source_url, ingested_at"
+    )
+    with postgres_engine.begin() as conn:
+        saved = conn.execute(
+            text(f"SELECT {columns} FROM mortgage_rate_observations")
+        ).mappings().all()
+        conn.execute(text("DELETE FROM mortgage_rate_observations"))
+    yield
+    with postgres_engine.begin() as conn:
+        conn.execute(text("DELETE FROM mortgage_rate_observations"))
+        if saved:
+            conn.execute(
+                text(
+                    f"INSERT INTO mortgage_rate_observations ({columns}) VALUES ("
+                    ":source, :product_type, :observation_date, :rate_percent, :points, "
+                    ":methodology_version, :source_url, :ingested_at)"
+                ),
+                [dict(row) for row in saved],
+            )
+
+
+def test_pmms_refresh_loads_empty_and_stale_tables_and_skips_fresh_ones(
+    postgres_engine, empty_pmms_table
+):
+    header = "date,pmms30,pmms30p,pmms15,pmms15p\n"
+    old_csv = header + "9/10/2026,6.30,,5.60,\n"
+    new_csv = old_csv + "11/5/2026,6.20,,5.50,\n"
+
+    empty = refresh_pmms_if_stale(engine=postgres_engine, fetch=lambda: old_csv)
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE mortgage_rate_observations SET ingested_at = :ingested_at"),
+            {"ingested_at": datetime.now(timezone.utc) - timedelta(days=10)},
+        )
+    stale = refresh_pmms_if_stale(engine=postgres_engine, fetch=lambda: new_csv)
+    fresh = refresh_pmms_if_stale(
+        engine=postgres_engine,
+        fetch=lambda: pytest.fail("a fresh table must not be downloaded"),
+    )
+
+    assert empty["status"] == "refreshed"
+    assert empty["received"] == 2
+    assert stale["status"] == "refreshed"
+    assert stale["inserted_or_changed"] == 2
+    assert stale["newest_observation_date"] == date(2026, 11, 5)
+    assert fresh["status"] == "skipped"
+    assert get_rate_trend("30_year_fixed", postgres_engine).current_rate == Decimal("6.20")
 
 
 def test_mortgage_rate_outlooks_are_versioned_and_idempotent(postgres_engine):
