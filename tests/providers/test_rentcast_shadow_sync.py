@@ -109,6 +109,7 @@ def test_shadow_sync_excludes_land_from_scoring_but_keeps_missing_sqft(monkeypat
     result = shadow_module.sync_rentcast_shadow(
         engine=object(),
         provider_factory=lambda city: FakeProvider(records_by_city[city]),
+        alert_eligible=False,
     )
 
     assert result.returned_count == 6
@@ -214,3 +215,39 @@ def test_shadow_sync_quarantines_bad_records_and_counts_retries(monkeypatch):
     assert result.request_count == 5
     assert [error["error_code"] for error in quarantined] == ["missing_identifier"]
     assert quarantined[0]["source"] == "rentcast"
+
+
+def test_shadow_sync_marks_listings_alert_eligible_only_when_live(monkeypatch):
+    captured = {}
+
+    def fake_ingest(records, **kwargs):
+        captured.update(kwargs)
+        return {"raw_inserted": 0, "scoring_eligible": 0, "current_changed": 0}
+
+    monkeypatch.setattr(shadow_module, "ingest_records", fake_ingest)
+    monkeypatch.setattr(shadow_module, "record_ingest_errors", lambda *_args: None)
+    monkeypatch.setattr(shadow_module, "snapshot_current_listings", lambda _engine: 0)
+    monkeypatch.setattr(shadow_module, "score_listings_against_market", lambda _engine: 0)
+    monkeypatch.setattr(
+        shadow_module,
+        "mark_feed_presence",
+        lambda _engine, _seen: shadow_module.FeedPresenceResult(0, 0),
+    )
+
+    class LiveSettings:
+        live_alerts_enabled = True
+
+    monkeypatch.setattr(shadow_module, "get_settings", lambda: LiveSettings())
+    result = shadow_module.sync_rentcast_shadow(
+        engine=object(), provider_factory=lambda _city: FakeProvider([])
+    )
+    assert result.alert_eligible is True
+    assert captured["alert_eligible"] is True
+
+    result = shadow_module.sync_rentcast_shadow(
+        engine=object(),
+        provider_factory=lambda _city: FakeProvider([]),
+        alert_eligible=False,
+    )
+    assert result.alert_eligible is False
+    assert captured["alert_eligible"] is False

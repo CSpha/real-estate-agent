@@ -6,6 +6,7 @@ from dataclasses import asdict
 from datetime import date
 from sqlalchemy import Engine, text
 
+from app.config import get_settings
 from app.db import get_engine
 
 
@@ -61,9 +62,14 @@ class ShadowReadiness:
 
 
 def assess_shadow_readiness(
-    *, source: str = "rentcast", engine: Engine | None = None
+    *,
+    source: str = "rentcast",
+    engine: Engine | None = None,
+    live_alerts_enabled: bool | None = None,
 ) -> ShadowReadiness:
     engine = engine or get_engine()
+    if live_alerts_enabled is None:
+        live_alerts_enabled = get_settings().live_alerts_enabled
     with engine.connect() as connection:
         row = dict(
             connection.execute(READINESS_SQL, {"source": source}).mappings().one()
@@ -79,8 +85,9 @@ def assess_shadow_readiness(
     checks = {
         "three_successful_run_dates": int(row["distinct_run_dates"] or 0) >= 3,
         "fourteen_day_observation_window": observation_days >= 14,
-        "no_shadow_listing_alert_eligible": int(row["max_alert_eligible_count"] or 0)
-        == 0,
+        # Once live alerts are approved, eligible listings are expected.
+        "no_shadow_listing_alert_eligible": live_alerts_enabled
+        or int(row["max_alert_eligible_count"] or 0) == 0,
         "supported_valuation_coverage_at_least_70pct": coverage >= 0.70,
         # Re-scoring stale listings is not a new observation of the market.
         "recent_run_dates_synced_listings": int(
