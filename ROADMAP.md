@@ -556,6 +556,11 @@ Still needed:
 - **November 6:** Backup retention (14 daily plus 8 weekly dumps, protecting the
   newest and newest verified) and an optional off-machine copy folder
   (`BACKUP_OFFSITE_DIR`, unset until chosen).
+- **November 8:** First live alerts: run 39 queued 11 potential deals, sent
+  as two digests with no failures. The valuation backfill still skipped
+  alert-eligible listings, so run 39 stored 0 supported valuations and deal
+  alerts used the November 3 valuations; fixed so every comparable-ready
+  listing is valued.
 
 ## External references
 

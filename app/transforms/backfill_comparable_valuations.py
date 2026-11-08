@@ -15,13 +15,14 @@ from app.transforms.persist_comparable_valuation import (
 )
 
 
+# Alert eligibility is not a filter: live alerts make listings eligible, and
+# their deal alerts depend on these valuations being current.
 ELIGIBLE_LISTINGS_SQL = text(
     """
     SELECT source, source_listing_id
     FROM listings_current
     WHERE source = :source
       AND scoring_eligible IS TRUE
-      AND alert_eligible IS FALSE
       AND sqft IS NOT NULL
     ORDER BY source_listing_id
     """
@@ -35,7 +36,7 @@ def backfill_comparable_valuations(
     engine: Engine | None = None,
     persist: Callable[..., dict[str, Any]] = persist_comparable_valuation,
 ) -> dict[str, Any]:
-    """Value each comparable-ready shadow listing; never queues alerts."""
+    """Value each comparable-ready listing; never queues alerts."""
 
     engine = engine or get_engine()
     as_of_date = as_of_date or analysis_today()
