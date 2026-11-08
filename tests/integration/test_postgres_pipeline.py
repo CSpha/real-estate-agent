@@ -39,6 +39,10 @@ from app.ingest.load_sample_listings import ingest_records, load_sample_csv
 from app.ingest.load_wayne_county_comparable_sales import (
     import_wayne_county_comparable_sales,
 )
+from app.market.affordability import (
+    get_latest_benchmark_rate,
+    get_listings as get_affordability_listings,
+)
 from app.market.macro_rate_signals import (
     load_fred_series,
     load_sme_expectations,
@@ -1203,6 +1207,115 @@ def test_mortgage_rate_history_is_idempotent(postgres_engine):
     assert trend.current_rate == Decimal("6.58")
     assert trend.change_4_weeks == Decimal("0.08")
     assert trend.direction == "roughly_stable"
+
+
+def test_affordability_reads_latest_benchmark_and_eligible_listings(
+    postgres_engine,
+):
+    source = "affordability_test"
+    assert get_latest_benchmark_rate(postgres_engine, source=source) is None
+
+    with postgres_engine.begin() as conn:
+        for product, observed, rate in (
+            ("30_year_fixed", date(2026, 7, 16), "6.55"),
+            ("30_year_fixed", date(2026, 7, 23), "6.58"),
+            ("15_year_fixed", date(2026, 7, 30), "5.90"),
+        ):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO mortgage_rate_observations (
+                        source, product_type, observation_date, rate_percent,
+                        methodology_version, source_url
+                    )
+                    VALUES (
+                        :source, :product, :observed, :rate,
+                        'application_based', 'https://example.test/pmms.csv'
+                    )
+                    """
+                ),
+                {
+                    "source": source,
+                    "product": product,
+                    "observed": observed,
+                    "rate": rate,
+                },
+            )
+        for listing_id, scoring, missing in (
+            ("ok", True, None),
+            ("ineligible", False, None),
+            ("missing", True, datetime(2026, 7, 1, tzinfo=timezone.utc)),
+        ):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO listings_current (
+                        source, source_listing_id, list_price,
+                        scoring_eligible, missing_from_feed_since
+                    )
+                    VALUES (:source, :id, 200000, :scoring, :missing)
+                    """
+                ),
+                {
+                    "source": source,
+                    "id": listing_id,
+                    "scoring": scoring,
+                    "missing": missing,
+                },
+            )
+
+        for as_of, rent in ((date(2026, 7, 1), "1700"), (date(2026, 8, 1), "1850")):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO listing_rent_estimates (
+                        source, source_listing_id, provider, as_of_date,
+                        request_fingerprint, monthly_rent, comparable_count,
+                        request_json, response_json
+                    )
+                    VALUES (
+                        :source, 'ok', 'rentcast', :as_of, repeat('b', 64),
+                        :rent, 5, '{}'::jsonb, '{}'::jsonb
+                    )
+                    """
+                ),
+                {"source": source, "as_of": as_of, "rent": rent},
+            )
+
+    try:
+        benchmark = get_latest_benchmark_rate(postgres_engine, source=source)
+        listings = get_affordability_listings(
+            postgres_engine, source=source, listing_id=None, limit=10
+        )
+        with_rent = get_affordability_listings(
+            postgres_engine, source=source, listing_id=None, limit=10, with_rent=True
+        )
+
+        assert benchmark.rate_pct == Decimal("6.580")
+        assert benchmark.as_of_date == date(2026, 7, 23)
+        assert benchmark.source == source
+        assert [row["source_listing_id"] for row in listings] == ["ok"]
+        # The newest rent estimate is joined.
+        assert listings[0]["monthly_rent"] == Decimal("1850.00")
+        assert listings[0]["rent_as_of_date"] == date(2026, 8, 1)
+        assert [row["source_listing_id"] for row in with_rent] == ["ok"]
+    finally:
+        # Later tests count every listing in the shared schema.
+        with postgres_engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM listing_rent_estimates WHERE source = :source"),
+                {"source": source},
+            )
+            conn.execute(
+                text("DELETE FROM listings_current WHERE source = :source"),
+                {"source": source},
+            )
+            conn.execute(
+                text(
+                    "DELETE FROM mortgage_rate_observations WHERE source = :source"
+                ),
+                {"source": source},
+            )
 
 
 def test_mortgage_rate_outlooks_are_versioned_and_idempotent(postgres_engine):
