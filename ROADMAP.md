@@ -559,6 +559,11 @@ Still needed:
 - **November 6:** Rental forecast assumptions moved into the versioned
   `rental_assumption_policies` table (revision 0022, version 1 = prior values).
   Rent-history derivation is a documented refusing stub pending data.
+- **November 8:** First live alerts: run 39 queued 11 potential deals, sent
+  as two digests with no failures. The valuation backfill still skipped
+  alert-eligible listings, so run 39 stored 0 supported valuations and deal
+  alerts used the November 3 valuations; fixed so every comparable-ready
+  listing is valued.
 
 ## External references
 
