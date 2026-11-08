@@ -12,12 +12,14 @@ from sqlalchemy import text
 from app.db import get_engine
 
 from app.ops.heartbeat import ping_heartbeat
+from app.ops.logging import get_logger, log_context
 from app.ops.notify import OpsNotifier
 from app.providers.rentcast import DEFAULT_MAX_RETRIES
 from app.providers.sync_rentcast_shadow import PILOT_CITIES
 from app.shadow.health import scheduler_is_healthy
 from app.shadow.run_pipeline import run_shadow_pipeline
 
+log = get_logger(__name__)
 
 # One page per pilot city at PILOT_PAGE_SIZE. Runs record their actual request
 # count; runs from before that was recorded used one request per city, and a
@@ -97,10 +99,11 @@ def run_scheduled_shadow_pipeline():
     reason = "SHADOW_ENABLE_RENTCAST_API_CALLS is not set"
     if rentcast_enabled:
         rentcast_enabled, reason = rentcast_budget_allows(engine=get_engine())
-    print(
-        "Scheduled RentCast API calls are "
-        f"{'enabled' if rentcast_enabled else 'disabled'}: {reason}.",
-        flush=True,
+    log.info(
+        "Scheduled RentCast API calls are %s: %s.",
+        "enabled" if rentcast_enabled else "disabled",
+        reason,
+        extra={"provider": "rentcast"},
     )
     return run_shadow_pipeline(skip_rentcast=not rentcast_enabled)
 
@@ -199,14 +202,19 @@ def watch_deadline(
         try:
             healthy = is_healthy(engine=engine_factory())
         except Exception as exc:
-            print(
-                f"Deadline watchdog could not read run history: {type(exc).__name__}: {exc}",
-                flush=True,
+            log.warning(
+                "Deadline watchdog could not read run history: %s: %s",
+                type(exc).__name__,
+                exc,
             )
             continue
         misses = 0 if healthy else misses + 1
         if misses:
-            print(f"Shadow scheduler is overdue (check {misses} of {misses_before_exit}).", flush=True)
+            log.warning(
+                "Shadow scheduler is overdue (check %s of %s).",
+                misses,
+                misses_before_exit,
+            )
             if notifier is not None:
                 notifier.problem(
                     "overdue",
@@ -214,7 +222,7 @@ def watch_deadline(
                     "scheduler will restart itself to recover.",
                 )
         if misses >= misses_before_exit:
-            print("Exiting so Docker restarts the shadow scheduler.", flush=True)
+            log.error("Exiting so Docker restarts the shadow scheduler.")
             exit_process(1)
             return
 
@@ -223,7 +231,7 @@ def main() -> None:
     interval_seconds = _positive_hours("SHADOW_INTERVAL_HOURS", 72) * 3600
     retry_seconds = _positive_hours("SHADOW_RETRY_HOURS", 6) * 3600
     initial_delay_seconds = _nonnegative_hours("SHADOW_INITIAL_DELAY_HOURS", 0) * 3600
-    print("Shadow scheduler started. Alerts are not imported or configured.")
+    log.info("Shadow scheduler started. Alerts are not imported or configured.")
     notifier = OpsNotifier()
     threading.Thread(
         target=watch_deadline,
@@ -241,20 +249,20 @@ def main() -> None:
                 Path("data/shadow_scheduler_initial_due.txt"),
             )
         except Exception as exc:
-            print(f"Unable to recover schedule: {type(exc).__name__}: {exc}")
+            log.error("Unable to recover schedule: %s: %s", type(exc).__name__, exc)
             notifier.problem(
                 "cannot read run history",
                 f"{type(exc).__name__}. Check that Postgres is running.",
             )
             time.sleep(60)
             continue
-        print(f"Next shadow attempt due at {deadline.isoformat()}", flush=True)
+        log.info("Next shadow attempt due at %s", deadline.isoformat())
         sleep_until(deadline)
-        print(f"Starting shadow run at {datetime.now(timezone.utc).isoformat()}")
+        log.info("Starting shadow run at %s", datetime.now(timezone.utc).isoformat())
         try:
             result = run_scheduled_shadow_pipeline()
         except Exception as exc:
-            print(f"Shadow run failed: {type(exc).__name__}: {exc}")
+            log.error("Shadow run failed: %s: %s", type(exc).__name__, exc)
             notifier.problem(
                 "run failed",
                 f"{type(exc).__name__}: {exc}. Retrying in "
@@ -262,10 +270,12 @@ def main() -> None:
             )
             delay = retry_seconds
         else:
-            print(
-                "Shadow run succeeded: "
-                f"run_id={result['run_id']}, ready={result['readiness']['ready']}"
-            )
+            with log_context(run_id=result["run_id"]):
+                log.info(
+                    "Shadow run succeeded: run_id=%s, ready=%s",
+                    result["run_id"],
+                    result["readiness"]["ready"],
+                )
             notifier.resolved(f"Run {result['run_id']} succeeded.")
             ping_heartbeat()
             delay = 0

@@ -25,6 +25,7 @@ class Settings:
     slack_test_webhook_url: str | None = None
     slack_ops_webhook_url: str | None = None
     shadow_heartbeat_url: str | None = None
+    live_alerts_enabled: bool = False
 
     @property
     def sqlalchemy_database_url(self) -> str:
@@ -53,6 +54,13 @@ def _get_int_env(name: str, default: int, fallback: str | None = None) -> int:
         raise ValueError(f"{selected_name} must be an integer") from exc
 
 
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
@@ -69,6 +77,7 @@ def get_settings() -> Settings:
         slack_test_webhook_url=os.getenv("SLACK_TEST_WEBHOOK_URL"),
         slack_ops_webhook_url=os.getenv("SLACK_OPS_WEBHOOK_URL"),
         shadow_heartbeat_url=os.getenv("SHADOW_HEARTBEAT_URL"),
+        live_alerts_enabled=_get_bool_env("LIVE_ALERTS_ENABLED"),
     )
 
 
