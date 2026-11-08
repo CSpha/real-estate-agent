@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import random
 import time
 from collections.abc import Callable, Mapping
@@ -12,14 +13,18 @@ from sqlalchemy import Engine, text
 from app.alerts.formatting import build_digest_message
 from app.alerts.slack import SlackDeliveryError
 from app.db import get_engine
+from app.ops.logging import get_logger
 
+
+log = get_logger(__name__)
 
 MAX_ATTEMPTS = 5
 CLAIM_TIMEOUT_MINUTES = 10
 MAX_RETRY_DELAY_SECONDS = 3600
 # Slack incoming webhooks allow roughly one message per second.
 MIN_SEND_INTERVAL_SECONDS = 1.0
-# More than DIGEST_THRESHOLD due alerts are sent as digests of up to DIGEST_SIZE.
+# More than DIGEST_THRESHOLD due alerts are sent as evenly sized digests of at
+# most DIGEST_SIZE (see digest_sizes).
 DIGEST_THRESHOLD = 3
 DIGEST_SIZE = 10
 
@@ -111,6 +116,21 @@ def release_alerts(alerts: list[Mapping[str, Any]], engine: Engine | None = None
     engine = engine or get_engine()
     with engine.begin() as conn:
         conn.execute(RELEASE_SQL, {"alert_ids": [alert["id"] for alert in alerts]})
+
+
+def digest_sizes(due: int, limit: int | None = None) -> list[int]:
+    """Split due alerts into the fewest digests of at most DIGEST_SIZE, evenly.
+
+    11 due alerts become [6, 5], not [10, 1]. A limit caps how many alerts are
+    sent, and the digest count follows the capped total, so this never plans
+    more messages than ceil(min(due, limit) / DIGEST_SIZE).
+    """
+    total = due if limit is None else min(due, limit)
+    if total <= 0:
+        return []
+    digests = math.ceil(total / DIGEST_SIZE)
+    size, extra = divmod(total, digests)
+    return [size + 1] * extra + [size] * (digests - extra)
 
 
 def count_due_alerts(engine: Engine | None = None) -> int:
@@ -239,6 +259,17 @@ def mark_alert_failed(
                 "last_error": str(error)[:2000],
             },
         )
+    # Log the error type only: Slack and requests messages can echo the webhook.
+    log.warning(
+        "Alert delivery failed.",
+        extra={
+            "alert_id": alert["id"],
+            "event_type": alert.get("alert_type"),
+            "outcome": status,
+            "attempt": attempts,
+            "error_type": type(error).__name__,
+        },
+    )
 
 
 def is_retryable_slack_error(error: Exception) -> bool:
@@ -305,13 +336,15 @@ def deliver_pending_alerts(
     With summarizers, more than DIGEST_THRESHOLD due alerts go out as digests.
     """
     engine = engine or get_engine()
-    if summarizers is not None and count_due_alerts(engine) > DIGEST_THRESHOLD:
-        print("Several alerts are due; sending them as digests.")
+    due = count_due_alerts(engine) if summarizers is not None else 0
+    if summarizers is not None and due > DIGEST_THRESHOLD:
+        log.info("Several alerts are due; sending them as digests.", extra={"due": due})
         return _deliver_digests(
             webhook_url,
             summarizers,
             send=send,
             engine=engine,
+            due=due,
             limit=limit,
             min_send_interval_seconds=min_send_interval_seconds,
             sleep=sleep,
@@ -362,14 +395,28 @@ def deliver_pending_alerts(
             )
             counts["failed"] += 1
             if getattr(exc, "webhook_unusable", False):
-                print(f"Stopping delivery: Slack webhook is unusable ({exc}).")
+                log.error(
+                    "Stopping delivery: Slack webhook is unusable.",
+                    extra={"error_type": type(exc).__name__},
+                )
                 break
             if getattr(exc, "rate_limited", False):
-                print(f"Stopping delivery: Slack rate limited this webhook ({exc}).")
+                log.warning(
+                    "Stopping delivery: Slack rate limited this webhook.",
+                    extra={"error_type": type(exc).__name__},
+                )
                 break
         else:
             mark_alert_sent(alert, engine)
             counts["sent"] += 1
+            log.info(
+                "Alert sent.",
+                extra={
+                    "alert_id": alert["id"],
+                    "event_type": alert["alert_type"],
+                    "outcome": "sent",
+                },
+            )
 
     return counts
 
@@ -380,25 +427,26 @@ def _deliver_digests(
     *,
     send: Callable[[str, dict[str, Any]], None],
     engine: Engine,
+    due: int,
     limit: int,
     min_send_interval_seconds: float,
     sleep: Callable[[float], None],
     monotonic: Callable[[], float],
 ) -> dict[str, int]:
-    """Send due alerts in digests of up to DIGEST_SIZE, one Slack message each.
+    """Send due alerts in evenly sized digests, one Slack message each.
 
+    Sizes come from digest_sizes(due, limit). Alerts that become due mid-run
+    wait for the next cycle, so a run never sends more digests than planned.
     Every alert in a digest shares its outcome. A webhook-level failure marks
     only the first alert permanently failed and returns the rest to pending.
     """
     counts = {"sent": 0, "failed": 0}
     last_send_at: float | None = None
-    processed = 0
 
-    while processed < limit:
-        batch = claim_alerts(engine, min(DIGEST_SIZE, limit - processed))
+    for size in digest_sizes(due, limit):
+        batch = claim_alerts(engine, size)
         if not batch:
             break
-        processed += len(batch)
 
         items: list[tuple[str, dict[str, Any]]] = []
         ready: list[dict[str, Any]] = []
@@ -432,7 +480,10 @@ def _deliver_digests(
                 mark_alert_failed(ready[0], exc, retryable=False, engine=engine)
                 release_alerts(ready[1:], engine)
                 counts["failed"] += 1
-                print(f"Stopping delivery: Slack webhook is unusable ({exc}).")
+                log.error(
+                    "Stopping delivery: Slack webhook is unusable.",
+                    extra={"error_type": type(exc).__name__, "released": len(ready) - 1},
+                )
                 break
             for alert in ready:
                 mark_alert_failed(
@@ -444,13 +495,21 @@ def _deliver_digests(
                     rate_limited=getattr(exc, "rate_limited", False),
                 )
             counts["failed"] += len(ready)
+            outcome = "failed"
             if getattr(exc, "rate_limited", False):
-                print(f"Stopping delivery: Slack rate limited this webhook ({exc}).")
+                log.warning(
+                    "Stopping delivery: Slack rate limited this webhook.",
+                    extra={"error_type": type(exc).__name__},
+                )
                 break
         else:
             for alert in ready:
                 mark_alert_sent(alert, engine)
             counts["sent"] += len(ready)
-        print(f"Digest of {len(ready)} alert(s) processed.")
+            outcome = "sent"
+        log.info(
+            f"Digest of {len(ready)} alert(s) processed.",
+            extra={"outcome": outcome, "alert_ids": [alert["id"] for alert in ready]},
+        )
 
     return counts
