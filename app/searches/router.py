@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
+from app.api_limits import (
+    get_api_engine,
+    page_limit,
+    page_offset,
+    paginate,
+    set_page_headers,
+)
+
 from app.searches.models import (
     ListingEvaluationRecord,
     SavedSearchCreate,
@@ -32,23 +40,27 @@ router = APIRouter(prefix="/saved-searches", tags=["saved searches"])
 )
 def create_search(payload: SavedSearchCreate) -> SavedSearchRecord:
     try:
-        return create_saved_search(payload)
+        return create_saved_search(payload, get_api_engine())
     except SavedSearchNameConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("", response_model=list[SavedSearchRecord])
 def list_searches(
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
+    response: Response,
+    limit: int = page_limit(),
+    offset: int = page_offset(),
 ) -> list[SavedSearchRecord]:
-    return list_saved_searches(limit=limit, offset=offset)
+    rows = list_saved_searches(limit=limit + 1, offset=offset, engine=get_api_engine())
+    rows, has_more = paginate(rows, limit)
+    set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
+    return rows
 
 
 @router.get("/{saved_search_id}", response_model=SavedSearchRecord)
 def get_search(saved_search_id: int) -> SavedSearchRecord:
     try:
-        return get_saved_search(saved_search_id)
+        return get_saved_search(saved_search_id, get_api_engine())
     except SavedSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Saved search not found") from exc
 
@@ -59,7 +71,7 @@ def update_search(
     payload: SavedSearchUpdate,
 ) -> SavedSearchRecord:
     try:
-        return update_saved_search(saved_search_id, payload)
+        return update_saved_search(saved_search_id, payload, get_api_engine())
     except SavedSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Saved search not found") from exc
     except SavedSearchNameConflictError as exc:
@@ -69,7 +81,7 @@ def update_search(
 @router.delete("/{saved_search_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_search(saved_search_id: int) -> Response:
     try:
-        delete_saved_search(saved_search_id)
+        delete_saved_search(saved_search_id, get_api_engine())
     except SavedSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Saved search not found") from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -84,7 +96,9 @@ def evaluate_search(
     limit: int = Query(1000, ge=1, le=10000),
 ) -> SearchEvaluationRun:
     try:
-        return evaluate_saved_search(saved_search_id, limit=limit)
+        return evaluate_saved_search(
+            saved_search_id, limit=limit, engine=get_api_engine()
+        )
     except SavedSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Saved search not found") from exc
 
@@ -95,14 +109,19 @@ def evaluate_search(
 )
 def list_evaluations(
     saved_search_id: int,
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
+    response: Response,
+    limit: int = page_limit(),
+    offset: int = page_offset(),
 ) -> list[ListingEvaluationRecord]:
     try:
-        return list_search_evaluations(
+        rows = list_search_evaluations(
             saved_search_id,
-            limit=limit,
+            limit=limit + 1,
             offset=offset,
+            engine=get_api_engine(),
         )
+        rows, has_more = paginate(rows, limit)
+        set_page_headers(response, limit=limit, offset=offset, has_more=has_more)
+        return rows
     except SavedSearchNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Saved search not found") from exc

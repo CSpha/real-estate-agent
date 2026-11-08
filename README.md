@@ -578,6 +578,13 @@ and a long random `API_AUTH_TOKEN`. Requests then require
 system. `API_RATE_LIMIT_PER_MINUTE` caps requests per process and client IP,
 with a default of 120. API request logs are structured JSON and omit tokens and
 query strings.
+List endpoints (`/listings`, `/alerts`, `/saved-searches`, saved-search
+evaluations, analyses, reviews, `/score`) take `limit` (default 50, max 200;
+analyses max 100) and `offset`; invalid values return 422. Bodies stay plain
+arrays and paging metadata is in the `X-Page-Limit`, `X-Page-Offset`,
+`X-Has-More`, and `X-Next-Offset` headers. API database sessions cancel
+statements longer than `API_STATEMENT_TIMEOUT_MS` (default 5000), and
+`/dashboard/data` returns at most 2,000 listings (`listings_truncated`).
 Docker also monitors the API with a local `/health` check and marks the
 container unhealthy after repeated failures. Compose restart policies act only
 when a process exits, so an unhealthy API is reported but not restarted.

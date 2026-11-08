@@ -10,6 +10,9 @@ from sqlalchemy import Engine, text
 from app.shadow.readiness import assess_shadow_readiness
 
 
+# Upper bound on listings returned to the dashboard in one response.
+DASHBOARD_MAX_LISTINGS = 2000
+
 LISTINGS_SQL = text(
     """
     SELECT
@@ -94,6 +97,7 @@ LISTINGS_SQL = text(
         COALESCE(score.total_points, score.normalized_available_score) DESC NULLS LAST,
         listing.list_price ASC NULLS LAST,
         listing.source_listing_id
+    LIMIT :row_limit
     """
 )
 
@@ -173,12 +177,22 @@ def summarize(listings: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def build_dashboard_data(*, engine: Engine, source: str = "rentcast") -> dict[str, Any]:
+def build_dashboard_data(
+    *,
+    engine: Engine,
+    source: str = "rentcast",
+    max_listings: int = DASHBOARD_MAX_LISTINGS,
+) -> dict[str, Any]:
     with engine.connect() as connection:
+        # Fetch one extra row so a truncated result can be flagged.
         listings = [
             _row_dict(row)
-            for row in connection.execute(LISTINGS_SQL, {"source": source}).mappings()
+            for row in connection.execute(
+                LISTINGS_SQL, {"source": source, "row_limit": max_listings + 1}
+            ).mappings()
         ]
+        truncated = len(listings) > max_listings
+        listings = listings[:max_listings]
         valuation_ids = [row["valuation_id"] for row in listings if row["valuation_id"]]
         components: dict[int, list[dict[str, Any]]] = {}
         if valuation_ids:
@@ -204,4 +218,6 @@ def build_dashboard_data(*, engine: Engine, source: str = "rentcast") -> dict[st
         "readiness": asdict(assess_shadow_readiness(source=source, engine=engine)),
         "runs": runs,
         "listings": listings,
+        "listings_truncated": truncated,
+        "listings_limit": max_listings,
     }

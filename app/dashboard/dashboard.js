@@ -103,7 +103,7 @@ function filteredListings() {
 function renderListings() {
   const rows = filteredListings();
   const body = document.querySelector("#listing-rows");
-  document.querySelector("#result-count").textContent = `${rows.length} of ${state.listings.length} listings`;
+  document.querySelector("#result-count").textContent = `${rows.length} of ${state.listings.length} listings${state.truncated ? " (capped; refine via the API)" : ""}`;
   document.querySelector("#empty-state").hidden = rows.length > 0;
   body.innerHTML = rows.map((row) => {
     const index = state.listings.indexOf(row);
@@ -183,6 +183,7 @@ async function loadDashboard() {
     const data = await response.json();
     state.listings = data.listings;
     state.runs = data.runs;
+    state.truncated = Boolean(data.listings_truncated);
     renderSummary(data);
     populateFilters();
     renderListings();
