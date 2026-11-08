@@ -572,6 +572,11 @@ host startup or power-management setting.
 
 ## Operational health and backups
 
+Runbooks: [deployment](docs/deployment.md),
+[credential rotation](docs/credential-rotation.md), and
+[incident response](docs/incident-response.md), including how to stop all
+alerts at once.
+
 Before exposing the API outside the local machine, set `API_AUTH_REQUIRED=true`
 and a long random `API_AUTH_TOKEN`. Requests then require
 `Authorization: Bearer <token>`; `/health` remains available to a monitoring
