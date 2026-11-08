@@ -9,16 +9,19 @@ from sqlalchemy import Engine
 from app.alerts import send_potential_deal_alerts, send_price_drop_alerts
 from app.alerts.formatting import build_digest_message
 from app.alerts.outbox import (
-    DIGEST_SIZE,
     DIGEST_THRESHOLD,
     MIN_SEND_INTERVAL_SECONDS,
     _payload,
     deliver_pending_alerts,
+    digest_sizes,
     preview_due_alerts,
 )
 from app.alerts.slack import send_to_slack
 from app.config import get_settings, require_setting
+from app.ops.logging import get_logger
 
+
+log = get_logger(__name__)
 
 FORMATTERS = {
     "price_drop": send_price_drop_alerts.format_slack_message,
@@ -47,9 +50,11 @@ def process_alert_outbox(
         limit=limit,
         summarizers=SUMMARIZERS,
     )
-    print(
-        "Alert delivery complete: "
-        f"{counts['sent']} sent, {counts['failed']} failed."
+    log.info(
+        "Alert delivery complete: %s sent, %s failed.",
+        counts["sent"],
+        counts["failed"],
+        extra={"sent": counts["sent"], "failed": counts["failed"]},
     )
     return counts
 
@@ -80,13 +85,23 @@ def preview_alert_outbox(
     ):
         label = f"#{alert['id']} {alert['alert_type']} {alert['source_listing_id']}"
         if error is not None:
-            print(f"INVALID {label}: {error}")
+            log.warning(
+                "INVALID %s: %s",
+                label,
+                error,
+                extra={"alert_id": alert["id"], "event_type": alert["alert_type"]},
+            )
             counts["invalid"] += 1
             continue
         counts["previewed"] += 1
         valid.append((alert, message, label))
     # Mirror production delivery: several due alerts go out as digests.
     if len(valid) > DIGEST_THRESHOLD:
+        chunks = []
+        start = 0
+        for size in digest_sizes(len(valid), limit):
+            chunks.append(valid[start : start + size])
+            start += size
         valid = [
             (
                 None,
@@ -97,24 +112,25 @@ def preview_alert_outbox(
                 f"digest of {len(chunk)}: "
                 + ", ".join(label for _a, _m, label in chunk),
             )
-            for chunk in (
-                valid[start : start + DIGEST_SIZE]
-                for start in range(0, len(valid), DIGEST_SIZE)
-            )
+            for chunk in chunks
         ]
     for index, (_alert, message, label) in enumerate(valid):
         if test_webhook_url is None:
+            # The payload is this command's output, not a log line: logging would
+            # replace the Zillow links in it with "<url>".
             print(f"PREVIEW {label}\n{json.dumps(message, indent=2)}")
             continue
         if index:
             sleep(MIN_SEND_INTERVAL_SECONDS)
         send(test_webhook_url, message)
         counts["test_sent"] += 1
-        print(f"TEST SENT {label}")
-    print(
-        "Alert preview complete: "
-        f"{counts['previewed']} valid, {counts['invalid']} invalid, "
-        f"{counts['test_sent']} sent to the test channel. Outbox unchanged."
+        log.info("TEST SENT %s", label)
+    log.info(
+        "Alert preview complete: %s valid, %s invalid, "
+        "%s sent to the test channel. Outbox unchanged.",
+        counts["previewed"],
+        counts["invalid"],
+        counts["test_sent"],
     )
     return counts
 

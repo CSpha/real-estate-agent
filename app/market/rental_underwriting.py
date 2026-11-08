@@ -39,6 +39,10 @@ def _payment_factor(rate_pct: Decimal, term_years: int) -> Decimal:
     return monthly_rate * growth / (growth - Decimal("1"))
 
 
+# Public name for the amortization factor, shared with app.market.affordability.
+payment_factor = _payment_factor
+
+
 def calculate_rental_underwriting(
     *,
     purchase_price: Decimal,

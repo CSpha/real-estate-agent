@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.alerts import outbox
+from app.alerts import process_alert_outbox as worker_module
 from app.alerts.formatting import (
     build_digest_message,
     escape,
@@ -182,16 +183,71 @@ def test_few_alerts_are_sent_individually(fake_digest_outbox, monkeypatch):
     assert len(queue_claims) == 4
 
 
-def test_many_alerts_are_sent_as_digests_of_ten(fake_digest_outbox):
+def _digest_headers(send):
+    return [call.args[1]["text"].splitlines()[0] for call in send.call_args_list]
+
+
+def test_many_alerts_are_sent_as_balanced_digests(fake_digest_outbox):
     fake_digest_outbox["add"](12)
     send = MagicMock()
 
     assert _deliver(send) == {"sent": 12, "failed": 0}
-    assert send.call_count == 2
-    first, second = (call.args[1] for call in send.call_args_list)
-    assert first["text"].startswith("10 listing alerts")
-    assert second["text"].startswith("2 listing alerts")
+    assert _digest_headers(send) == ["6 listing alerts", "6 listing alerts"]
     assert fake_digest_outbox["sent"] == list(range(1, 13))
+
+
+def test_eleven_due_alerts_make_digests_of_six_and_five(fake_digest_outbox):
+    fake_digest_outbox["add"](11)
+    send = MagicMock()
+
+    assert _deliver(send) == {"sent": 11, "failed": 0}
+    assert _digest_headers(send) == ["6 listing alerts", "5 listing alerts"]
+    assert fake_digest_outbox["sent"] == list(range(1, 12))
+
+
+@pytest.mark.parametrize(
+    "due,expected",
+    [(4, [4]), (10, [10]), (21, [7, 7, 7])],
+)
+def test_digest_counts_match_the_due_count(fake_digest_outbox, due, expected):
+    fake_digest_outbox["add"](due)
+    send = MagicMock()
+
+    assert _deliver(send) == {"sent": due, "failed": 0}
+    assert _digest_headers(send) == [f"{size} listing alerts" for size in expected]
+
+
+@pytest.mark.parametrize(
+    "due,limit,expected",
+    [
+        (0, None, []),
+        (-1, None, []),
+        (4, None, [4]),
+        (10, None, [10]),
+        (11, None, [6, 5]),
+        (20, None, [10, 10]),
+        (21, None, [7, 7, 7]),
+        (25, None, [9, 8, 8]),
+        (25, 12, [6, 6]),
+        (25, 10, [10]),
+        (25, 4, [4]),
+        (25, 0, []),
+        (5, 100, [5]),
+    ],
+)
+def test_digest_sizes(due, limit, expected):
+    assert outbox.digest_sizes(due, limit) == expected
+
+
+@pytest.mark.parametrize("due", range(1, 120))
+def test_digest_sizes_are_even_bounded_and_never_exceed_the_old_message_count(due):
+    sizes = outbox.digest_sizes(due)
+    old_message_count = -(-due // outbox.DIGEST_SIZE)
+    assert sum(sizes) == due
+    assert len(sizes) == old_message_count
+    assert max(sizes) <= outbox.DIGEST_SIZE
+    assert max(sizes) - min(sizes) <= 1
+    assert sizes == sorted(sizes, reverse=True)
 
 
 def test_digest_respects_the_limit(fake_digest_outbox):
@@ -202,6 +258,14 @@ def test_digest_respects_the_limit(fake_digest_outbox):
     assert send.call_args.args[1]["text"].startswith("5 listing alerts")
 
 
+def test_limit_caps_the_digest_count_too(fake_digest_outbox):
+    fake_digest_outbox["add"](25)
+    send = MagicMock()
+
+    assert _deliver(send, limit=12) == {"sent": 12, "failed": 0}
+    assert _digest_headers(send) == ["6 listing alerts", "6 listing alerts"]
+
+
 def test_unusable_webhook_fails_one_digest_alert_and_releases_the_rest(fake_digest_outbox):
     fake_digest_outbox["add"](12)
     send = MagicMock(
@@ -210,7 +274,7 @@ def test_unusable_webhook_fails_one_digest_alert_and_releases_the_rest(fake_dige
 
     assert _deliver(send) == {"sent": 0, "failed": 1}
     assert [alert_id for alert_id, _ in fake_digest_outbox["failed"]] == [1]
-    assert fake_digest_outbox["released"] == list(range(2, 11))
+    assert fake_digest_outbox["released"] == list(range(2, 7))
     assert send.call_count == 1
 
 
@@ -222,7 +286,7 @@ def test_rate_limited_digest_retries_every_alert_and_stops(fake_digest_outbox):
         )
     )
 
-    assert _deliver(send) == {"sent": 0, "failed": 10}
+    assert _deliver(send) == {"sent": 0, "failed": 6}
     assert all(kwargs["rate_limited"] for _id, kwargs in fake_digest_outbox["failed"])
     assert send.call_count == 1
 
@@ -235,3 +299,36 @@ def test_bad_payload_is_dropped_from_the_digest(fake_digest_outbox):
     assert _deliver(send) == {"sent": 4, "failed": 1}
     assert fake_digest_outbox["failed"][0][0] == 5
     assert fake_digest_outbox["failed"][0][1]["retryable"] is False
+
+
+def test_preview_uses_the_same_balanced_digests_as_delivery(monkeypatch):
+    previews = [
+        (
+            {
+                "id": i,
+                "alert_type": "price_drop",
+                "source_listing_id": f"l{i}",
+                "payload_json": DROP,
+            },
+            {"text": "one"},
+            None,
+        )
+        for i in range(1, 12)
+    ]
+    monkeypatch.setattr(worker_module, "preview_due_alerts", lambda *a, **k: previews)
+    monkeypatch.setattr(
+        worker_module,
+        "get_settings",
+        lambda: type("S", (), {"slack_test_webhook_url": "https://example.invalid/test"})(),
+    )
+    send = MagicMock()
+
+    counts = worker_module.preview_alert_outbox(
+        test_channel=True, send=send, sleep=MagicMock()
+    )
+
+    assert counts["test_sent"] == 2
+    assert [call.args[1]["text"].splitlines()[0] for call in send.call_args_list] == [
+        "6 listing alerts",
+        "5 listing alerts",
+    ]
