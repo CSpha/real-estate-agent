@@ -549,6 +549,11 @@ Still needed:
   `LIVE_ALERTS_ENABLED`; potential deals alert once per listing (again only at
   a lower price) and skip flagged valuations (269 unit and 30 integration tests
   passed).
+- **November 8:** First live alerts: run 39 queued 11 potential deals, sent
+  as two digests with no failures. The valuation backfill still skipped
+  alert-eligible listings, so run 39 stored 0 supported valuations and deal
+  alerts used the November 3 valuations; fixed so every comparable-ready
+  listing is valued.
 
 ## External references
 
