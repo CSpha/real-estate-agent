@@ -280,3 +280,131 @@ def test_benchmark_older_than_two_weeks_is_flagged():
     assert affordability.benchmark_age_warning(benchmark, date(2026, 9, 24)) is None
     warning = affordability.benchmark_age_warning(benchmark, date(2026, 11, 8))
     assert warning.startswith("Warning: the benchmark is 59 days old")
+
+
+def test_conventional_adds_pmi_only_below_twenty_percent_down():
+    ten = calculate_affordability(
+        Decimal("250000"),
+        Decimal("6.50"),
+        AffordabilityAssumptions(down_payment_pct=Decimal("10")),
+    )
+    twenty = calculate_affordability(Decimal("250000"), Decimal("6.50"))
+
+    # 0.50% of the $225,000 loan per year, divided by 12.
+    assert {s.pmi for s in ten.scenarios} == {Decimal("93.75")}
+    assert {s.pmi for s in twenty.scenarios} == {Decimal("0.00")}
+    benchmark = ten.scenarios[1]
+    assert benchmark.total == (
+        benchmark.principal_interest
+        + benchmark.property_tax
+        + benchmark.insurance
+        + benchmark.pmi
+        + benchmark.hoa
+    )
+
+
+def test_dscr_program_adds_rate_premium_and_no_pmi():
+    result = calculate_affordability(
+        Decimal("250000"),
+        Decimal("6.50"),
+        AffordabilityAssumptions(down_payment_pct=Decimal("10")),
+        program="dscr",
+    )
+
+    assert [s.rate_pct for s in result.scenarios] == [
+        Decimal("7.00"),
+        Decimal("7.50"),
+        Decimal("8.00"),
+    ]
+    assert {s.pmi for s in result.scenarios} == {Decimal("0.00")}
+    assert result.benchmark_rate_pct == Decimal("6.50")
+
+
+def test_dscr_below_typical_minimum_down_is_flagged():
+    def result(program, down):
+        return calculate_affordability(
+            Decimal("250000"),
+            Decimal("6.50"),
+            AffordabilityAssumptions(down_payment_pct=Decimal(down)),
+            program=program,
+        )
+
+    assert result("dscr", "10").below_program_minimum
+    assert not result("dscr", "20").below_program_minimum
+    assert not result("conventional", "10").below_program_minimum
+
+
+def test_rent_coverage_ratio_and_rent_needed_for_target():
+    # No loan: the payment is tax $375 + insurance $125 = $500.
+    no_loan = calculate_affordability(
+        Decimal("300000"),
+        Decimal("6.50"),
+        AffordabilityAssumptions(down_payment_pct=Decimal("100")),
+        program="dscr",
+        monthly_rent=Decimal("2000"),
+    )
+    assert no_loan.scenarios[1].total == Decimal("500.00")
+    assert no_loan.scenarios[1].dscr == Decimal("4.00")
+    assert no_loan.scenarios[1].rent_for_target == Decimal("625.00")
+
+    # $300,000 loan at 7.00% (6.00 benchmark + 1.00 DSCR premium): P&I $1,995.91.
+    financed = calculate_affordability(
+        Decimal("300000"),
+        Decimal("6.00"),
+        _no_down(),
+        program="dscr",
+        monthly_rent=Decimal("2500"),
+    )
+    benchmark = financed.scenarios[1]
+    assert benchmark.principal_interest == Decimal("1995.91")
+    assert benchmark.total == Decimal("2495.91")
+    assert benchmark.dscr == Decimal("1.00")
+    assert benchmark.rent_for_target == Decimal("3119.89")
+    assert financed.monthly_rent == Decimal("2500.00")
+
+
+def test_dscr_is_unknown_without_a_rent_estimate():
+    result = calculate_affordability(Decimal("250000"), Decimal("6.50"))
+
+    assert result.monthly_rent is None
+    assert {s.dscr for s in result.scenarios} == {None}
+
+
+def test_unknown_program_is_rejected():
+    with pytest.raises(ValueError, match="program"):
+        calculate_affordability(Decimal("250000"), Decimal("6.50"), program="fha")
+
+
+def test_cli_compares_both_programs_at_ten_and_twenty_percent_down(
+    monkeypatch, capsys
+):
+    from datetime import date
+
+    benchmark = affordability.BenchmarkRate(
+        rate_pct=Decimal("6.50"),
+        as_of_date=date.today(),
+        source="freddie_mac_pmms",
+        source_url="https://example.test/pmms.csv",
+    )
+    listing = {
+        "source": "rentcast",
+        "source_listing_id": "L1",
+        "address": "1 Main St",
+        "city": "Wooster",
+        "state": "OH",
+        "list_price": Decimal("250000"),
+        "monthly_rent": Decimal("1900"),
+        "rent_as_of_date": date(2026, 9, 15),
+    }
+    monkeypatch.setattr(affordability, "get_engine", lambda: object())
+    monkeypatch.setattr(affordability, "get_latest_benchmark_rate", lambda _e: benchmark)
+    monkeypatch.setattr(affordability, "get_listings", lambda *_a, **_k: [listing])
+
+    assert affordability.main([]) == 0
+    output = capsys.readouterr().out
+    rows = [line for line in output.splitlines() if line.startswith("  conventional")
+            or line.startswith("  dscr")]
+    assert len(rows) == 12  # 2 programs x 2 down payments x 3 rates
+    assert "RentCast rent estimate $1,900.00/mo" in output
+    assert "below the down payment most DSCR lenders require" in output
+    assert "Warning" not in output

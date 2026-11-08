@@ -1264,19 +1264,48 @@ def test_affordability_reads_latest_benchmark_and_eligible_listings(
                 },
             )
 
+        for as_of, rent in ((date(2026, 7, 1), "1700"), (date(2026, 8, 1), "1850")):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO listing_rent_estimates (
+                        source, source_listing_id, provider, as_of_date,
+                        request_fingerprint, monthly_rent, comparable_count,
+                        request_json, response_json
+                    )
+                    VALUES (
+                        :source, 'ok', 'rentcast', :as_of, repeat('b', 64),
+                        :rent, 5, '{}'::jsonb, '{}'::jsonb
+                    )
+                    """
+                ),
+                {"source": source, "as_of": as_of, "rent": rent},
+            )
+
     try:
         benchmark = get_latest_benchmark_rate(postgres_engine, source=source)
         listings = get_affordability_listings(
             postgres_engine, source=source, listing_id=None, limit=10
+        )
+        with_rent = get_affordability_listings(
+            postgres_engine, source=source, listing_id=None, limit=10, with_rent=True
         )
 
         assert benchmark.rate_pct == Decimal("6.580")
         assert benchmark.as_of_date == date(2026, 7, 23)
         assert benchmark.source == source
         assert [row["source_listing_id"] for row in listings] == ["ok"]
+        # The newest rent estimate is joined.
+        assert listings[0]["monthly_rent"] == Decimal("1850.00")
+        assert listings[0]["rent_as_of_date"] == date(2026, 8, 1)
+        assert [row["source_listing_id"] for row in with_rent] == ["ok"]
     finally:
         # Later tests count every listing in the shared schema.
         with postgres_engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM listing_rent_estimates WHERE source = :source"),
+                {"source": source},
+            )
             conn.execute(
                 text("DELETE FROM listings_current WHERE source = :source"),
                 {"source": source},
