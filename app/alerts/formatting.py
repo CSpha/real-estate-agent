@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 
-MAP_SEARCH_URL = "https://www.google.com/maps/search/?api=1&query="
+# Zillow's address search opens the home's page when the address matches.
+ZILLOW_SEARCH_URL = "https://www.zillow.com/homes/{}_rb/"
 HEADER_MAX_LENGTH = 150
 DIGEST_HEADER = ":house: {count} listing alerts"
 
@@ -49,8 +50,10 @@ def full_address(event: Mapping[str, Any]) -> str:
     return ", ".join(str(part) for part in parts if part) or "Unknown address"
 
 
-def map_url(event: Mapping[str, Any]) -> str:
-    return MAP_SEARCH_URL + quote_plus(full_address(event))
+def zillow_url(event: Mapping[str, Any]) -> str:
+    """Zillow address-search link: 3763-Bates-Rd,-Wooster,-OH_rb."""
+    slug = "-".join(full_address(event).split())
+    return ZILLOW_SEARCH_URL.format(quote(slug, safe=",-"))
 
 
 def escape(value: Any) -> str:
@@ -61,7 +64,7 @@ def escape(value: Any) -> str:
 
 
 def address_link(event: Mapping[str, Any]) -> str:
-    return f"<{map_url(event)}|{escape(full_address(event))}>"
+    return f"<{zillow_url(event)}|{escape(full_address(event))}>"
 
 
 def header_block(text: str) -> dict[str, Any]:
