@@ -332,7 +332,9 @@ unless their terms and an explicit agreement authorize it.
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
 - [x] Validate and limit API pagination and expensive queries
 - [x] CI for migration round trips, integration tests, and secret scanning
-- [ ] Document deployment, credential rotation, and incident response
+- [x] Document deployment, credential rotation, and incident response
+      ([deployment](docs/deployment.md), [credential rotation](docs/credential-rotation.md),
+      [incident response](docs/incident-response.md))
 
 ### Acceptance criteria
 
