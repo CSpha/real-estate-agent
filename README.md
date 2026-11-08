@@ -257,7 +257,10 @@ Shadow pipeline, scheduler, and RentCast sync logs go to stdout through
 `[run_id=12 provider=rentcast]` appended. Set `LOG_FORMAT=json` for one JSON
 object per line (`ts`, `level`, `logger`, `message`, plus `run_id`, `provider`,
 and request counts). Webhook, heartbeat, and API-key URLs are never logged.
-Alert-outbox and alert-worker logging is a follow-up.
+The alert outbox, outbox processor, and live alert worker use the same helper:
+worker lines carry `component=alert_worker` (plus the cycle number and shadow
+`run_id`), and delivery lines carry `alert_id` (`alert_ids` for digests),
+`event_type`, and `outcome`. Slack failures log only the error type.
 
 Run the dedicated pipeline once, or start its three-day Docker scheduler:
 

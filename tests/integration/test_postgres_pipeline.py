@@ -2021,6 +2021,33 @@ def test_many_due_alerts_are_delivered_as_one_digest(postgres_engine):
             )
 
 
+def test_eleven_due_alerts_are_delivered_as_digests_of_six_and_five(postgres_engine):
+    ids = _queue_digest_rows(postgres_engine, "balanced", 11)
+    sent = []
+    try:
+        counts = deliver_pending_alerts(
+            "https://example.invalid/test-webhook",
+            FORMATTERS,
+            send=lambda _url, payload: sent.append(payload),
+            engine=postgres_engine,
+            min_send_interval_seconds=0,
+            summarizers=SUMMARIZERS,
+        )
+        assert counts == {"sent": 11, "failed": 0}
+        assert [payload["text"].splitlines()[0] for payload in sent] == [
+            "6 listing alerts",
+            "5 listing alerts",
+        ]
+        rows = _outbox_rows(postgres_engine, ids)
+        assert [(row.status, row.attempt_count) for row in rows] == [("sent", 1)] * 11
+    finally:
+        with postgres_engine.begin() as conn:
+            conn.execute(text("DELETE FROM alert_outbox WHERE id = ANY(:ids)"), {"ids": ids})
+            conn.execute(
+                text("DELETE FROM alerts_sent WHERE source_listing_id LIKE 'balanced-%'")
+            )
+
+
 def test_unusable_webhook_releases_the_rest_of_a_digest(postgres_engine):
     ids = _queue_digest_rows(postgres_engine, "release", 5)
 
