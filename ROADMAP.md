@@ -18,13 +18,13 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 | Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI |
 | Alert promotion | **Approved November 6**: live alerts via the `alert-worker` once `LIVE_ALERTS_ENABLED=true`; flagged listings excluded from deal alerts; transaction validity still outstanding |
 
-Latest schema revision: `0021_listing_feed_presence`.
+Latest schema revision: `0022_rental_assumption_policies`.
 
 ## Current capabilities
 
 Data and ingestion
 
-- One authoritative Alembic-managed PostgreSQL schema (21 revisions)
+- One authoritative Alembic-managed PostgreSQL schema (22 revisions)
 - Immutable raw JSON payloads with content hashes and normalized current listings
 - Idempotent sample ingestion and change-aware listing history
 - RentCast active-sale-listing adapter with bounded pagination, secret-header
@@ -118,9 +118,12 @@ Operations
    Revision `0020` now owns the table (adopting existing rows), and
    `sync_provider` reads every page, saving its cursor only after each page
    commits.
-5. **Rental scenario assumptions are hard-coded.** Growth rates and the 0.74
-   rent-to-cash-flow pass-through in `app/market/rental_forecast.py` are not
-   derived from market rent history and are not stored in a policy table.
+5. **Rental scenario assumptions are not derived from market data.** Growth
+   rates and the 0.74 rent-to-cash-flow pass-through are now versioned in
+   `rental_assumption_policies` (stored forecasts record the version), but the
+   values are still the original hand-picked ones: the database holds no market
+   rent history (one AVM estimate per listing, single date), so
+   `derive_rental_assumptions` refuses until such a source is ingested.
 
 ## Alert promotion gates
 
@@ -327,7 +330,7 @@ unless their terms and an explicit agreement authorize it.
 - [x] Off-machine backup copies and a retention policy
       (`BACKUP_OFFSITE_DIR`, `BACKUP_KEEP_DAILY`/`BACKUP_KEEP_WEEKLY`)
 - [ ] Readiness and liveness endpoints if deployed behind an orchestrator
-- [ ] Validate and limit API pagination and expensive queries
+- [x] Validate and limit API pagination and expensive queries
 - [x] CI for migration round trips, integration tests, and secret scanning
 - [ ] Document deployment, credential rotation, and incident response
 
@@ -419,8 +422,9 @@ Rental follow-up:
       stored PMMS-plus-spread rate and 30-year amortization
 - [x] Rent and DSCR results in the shadow-review dashboard
 - [x] Five-year conservative/base/upside scenarios (`rental-growth-scenarios-v1`)
-- [ ] Derive growth rates from market rent history and version the assumptions
-      before presenting scenarios as a forecast
+- [x] Version the assumptions (`rental_assumption_policies`, stored per forecast)
+- [ ] Derive growth rates from market rent history before presenting scenarios
+      as a forecast (blocked: no rent history ingested)
 
 ### Explainability and safeguards
 
@@ -500,6 +504,9 @@ Still needed:
 
 - **November 6, 2026:** Added structured logging (`app/ops/logging.py`) with
   run and provider context to the shadow pipeline, scheduler, and RentCast sync.
+- **November 6, 2026:** API list endpoints now validate `limit` (default 50,
+  max 200) and `offset` with deterministic ordering, API sessions enforce
+  `API_STATEMENT_TIMEOUT_MS` (default 5000), and dashboard data is capped.
 - **September 8, 2026:** Integration suite passed (18) on an isolated test
   database. Legacy database backed up, rehearsed, and cut over to
   `realestate_dev_20260908`, with originals retained in `legacy_archive` and the
@@ -553,6 +560,9 @@ Still needed:
 - **November 6:** Post-run ops monitoring for repeated RentCast failures,
   unexplained skips, request budget at 80%, and database size, plus a read-only
   `python -m app.ops.capacity` report.
+- **November 6:** Rental forecast assumptions moved into the versioned
+  `rental_assumption_policies` table (revision 0022, version 1 = prior values).
+  Rent-history derivation is a documented refusing stub pending data.
 - **November 6:** Backup retention (14 daily plus 8 weekly dumps, protecting the
   newest and newest verified) and an optional off-machine copy folder
   (`BACKUP_OFFSITE_DIR`, unset until chosen).
