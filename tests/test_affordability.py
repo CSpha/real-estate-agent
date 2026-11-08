@@ -266,3 +266,17 @@ def test_stored_benchmark_is_returned_with_date_and_source():
     assert benchmark.rate_pct == Decimal("6.580")
     assert benchmark.as_of_date == date(2026, 7, 23)
     assert benchmark.source == "freddie_mac_pmms"
+
+
+def test_benchmark_older_than_two_weeks_is_flagged():
+    from datetime import date
+
+    benchmark = affordability.BenchmarkRate(
+        rate_pct=Decimal("6.760"),
+        as_of_date=date(2026, 9, 10),
+        source="freddie_mac_pmms",
+        source_url="https://example.test/pmms.csv",
+    )
+    assert affordability.benchmark_age_warning(benchmark, date(2026, 9, 24)) is None
+    warning = affordability.benchmark_age_warning(benchmark, date(2026, 11, 8))
+    assert warning.startswith("Warning: the benchmark is 59 days old")

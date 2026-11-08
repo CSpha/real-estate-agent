@@ -27,6 +27,8 @@ from app.market.rental_underwriting import (
 
 BENCHMARK_PRODUCT = "30_year_fixed"
 MAX_RATE_PCT = Decimal("30")  # matches the DB check on mortgage_rate_observations
+# PMMS publishes weekly, so an older benchmark means the rate load hasn't run.
+STALE_BENCHMARK_DAYS = 14
 _DEFAULTS = UnderwritingAssumptions()
 SCENARIO_LABELS = ("benchmark - spread", "benchmark", "benchmark + spread")
 
@@ -217,6 +219,16 @@ def get_listings(
     return [dict(row) for row in rows]
 
 
+def benchmark_age_warning(benchmark: BenchmarkRate, today: date) -> str | None:
+    age_days = (today - benchmark.as_of_date).days
+    if age_days <= STALE_BENCHMARK_DAYS:
+        return None
+    return (
+        f"Warning: the benchmark is {age_days} days old; refresh it with "
+        "`python -m app.market.mortgage_rates`."
+    )
+
+
 def _usd(value: Decimal) -> str:
     return f"${value:,.2f}"
 
@@ -258,7 +270,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Read-only monthly payment scenarios around the PMMS "
         "30-year benchmark rate.",
     )
-    parser.add_argument("--source", help="Only listings from this source.")
+    parser.add_argument(
+        "--source",
+        default="rentcast",
+        help="Only listings from this source (default rentcast; 'all' for every source).",
+    )
     parser.add_argument("--limit", type=int, default=10, help="Max listings.")
     parser.add_argument("--listing-id", help="Only this source_listing_id.")
     parser.add_argument(
@@ -287,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
         f"as of {benchmark.as_of_date.isoformat()}, source {benchmark.source} "
         f"({benchmark.source_url})"
     )
+    warning = benchmark_age_warning(benchmark, date.today())
+    if warning:
+        print(f"  {warning}")
 
     print("Step 2: assumptions")
     for line in format_assumptions(assumptions):
@@ -298,7 +317,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print("Step 3: loading current scoring-eligible listings")
     listings = get_listings(
-        engine, source=args.source, listing_id=args.listing_id, limit=args.limit
+        engine,
+        source=None if args.source == "all" else args.source,
+        listing_id=args.listing_id,
+        limit=args.limit,
     )
     print(f"  {len(listings)} listing(s) selected (limit {args.limit}).")
 
