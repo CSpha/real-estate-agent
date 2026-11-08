@@ -369,7 +369,7 @@ python -m app.alerts.process_alert_outbox
 them to `SLACK_TEST_WEBHOOK_URL` only. Neither mode reads the production webhook
 or changes the outbox, so previewed alerts stay pending for real delivery.
 
-Messages use Slack Block Kit (headline, address linked to a map search, key
+Messages use Slack Block Kit (headline, address linked to a Zillow search, key
 prices, and listing ID) with a plain-text fallback for notifications. When more
 than three alerts are due at once, the worker sends digests of up to ten alerts,
 one line each; every alert in a digest shares its delivery outcome.

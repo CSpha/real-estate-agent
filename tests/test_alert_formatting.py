@@ -3,7 +3,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.alerts import outbox
-from app.alerts.formatting import build_digest_message, escape, header_block, money, percent
+from app.alerts.formatting import (
+    build_digest_message,
+    escape,
+    header_block,
+    money,
+    percent,
+    zillow_url,
+)
 from app.alerts.process_alert_outbox import SUMMARIZERS
 from app.alerts.send_potential_deal_alerts import (
     format_slack_message as format_deal,
@@ -62,7 +69,17 @@ def test_price_drop_message_is_readable_and_valid():
     assert "Change: -$29,900 (-9.20%)" in message["text"]
     fields = [field["text"] for field in message["blocks"][2]["fields"]]
     assert fields == ["*Now*\n$295,000", "*Was*\n$324,900", "*Change*\n-$29,900 (-9.20%)"]
-    assert "google.com/maps" in message["blocks"][1]["text"]["text"]
+    assert message["blocks"][1]["text"]["text"] == (
+        "*<https://www.zillow.com/homes/3763-Bates-Rd,-Wooster,-OH_rb/"
+        "|3763 Bates Rd, Wooster, OH>*"
+    )
+
+
+def test_zillow_url_encodes_unsafe_address_characters():
+    event = {"address": "12 Main St #4/B", "city": "Orrville", "state": "OH"}
+    assert zillow_url(event) == (
+        "https://www.zillow.com/homes/12-Main-St-%234%2FB,-Orrville,-OH_rb/"
+    )
 
 
 def test_potential_deal_message_is_readable_and_valid():
