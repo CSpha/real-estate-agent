@@ -69,6 +69,7 @@ from app.searches.service import (
     list_search_evaluations,
     update_saved_search,
 )
+from app.transforms.backfill_comparable_valuations import ELIGIBLE_LISTINGS_SQL
 from app.transforms.score_listings_against_market import (
     score_listings_against_market,
 )
@@ -1727,6 +1728,40 @@ def test_potential_deals_skip_flagged_and_alert_once_per_price(
             "listings_current",
         ):
             conn.execute(text(f"DELETE FROM {table} WHERE source = 'live_deal_test'"))
+
+
+def test_valuation_backfill_includes_alert_eligible_listings(postgres_engine):
+    with postgres_engine.begin() as conn:
+        for listing_id, alert_eligible, scoring_eligible, sqft in (
+            ("live", True, True, 1500),
+            ("shadow", False, True, 1500),
+            ("not-scored", True, False, 1500),
+            ("no-sqft", True, True, None),
+        ):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO listings_current (
+                        source, source_listing_id, sqft,
+                        alert_eligible, scoring_eligible
+                    )
+                    VALUES ('backfill_test', :id, :sqft, :alert, :scoring)
+                    """
+                ),
+                {
+                    "id": listing_id,
+                    "sqft": sqft,
+                    "alert": alert_eligible,
+                    "scoring": scoring_eligible,
+                },
+            )
+        selected = [
+            row.source_listing_id
+            for row in conn.execute(ELIGIBLE_LISTINGS_SQL, {"source": "backfill_test"})
+        ]
+        conn.execute(text("DELETE FROM listings_current WHERE source = 'backfill_test'"))
+
+    assert selected == ["live", "shadow"]
 
 
 def test_rate_limited_alert_waits_for_retry_after(postgres_engine):
