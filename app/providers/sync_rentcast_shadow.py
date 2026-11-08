@@ -15,7 +15,9 @@ from app.transforms.score_listings_against_market import (
 from app.transforms.snapshot_listings import snapshot_current_listings
 from app.config import get_settings
 from app.db import get_engine
+from app.ops.logging import get_logger, log_context
 
+log = get_logger(__name__)
 
 PILOT_CITIES = ("Wooster", "Orrville", "Rittman")
 PILOT_STATE = "OH"
@@ -180,14 +182,15 @@ def mark_feed_presence(
             EXCLUDE_STILL_MISSING_SQL, {"source": SOURCE}
         ).rowcount
     if skipped_reason:
-        print(f"Feed presence check skipped: {skipped_reason}.")
-    print(
-        f"Feed presence: {missing_count} listing(s) newly missing, "
-        f"{returned_count} returned to the feed."
+        log.warning("Feed presence check skipped: %s.", skipped_reason)
+    log.info(
+        "Feed presence: %s listing(s) newly missing, %s returned to the feed.",
+        missing_count,
+        returned_count,
     )
     if excluded_count > 0:
-        print(
-            f"Excluded {excluded_count} still-missing listing(s) from scoring."
+        log.info(
+            "Excluded %s still-missing listing(s) from scoring.", excluded_count
         )
     return FeedPresenceResult(
         newly_missing_count=max(missing_count, 0),
@@ -208,10 +211,24 @@ def sync_rentcast_shadow(
     never queues or sends alerts itself; the separate alert worker does that.
     """
 
+    with log_context(provider=SOURCE):
+        return _sync_rentcast_shadow(
+            engine=engine,
+            provider_factory=provider_factory,
+            alert_eligible=alert_eligible,
+        )
+
+
+def _sync_rentcast_shadow(
+    *,
+    engine: Engine | None,
+    provider_factory: Callable[[str], RentCastProvider] | None,
+    alert_eligible: bool | None,
+) -> RentCastShadowSyncResult:
     engine = engine or get_engine()
     if alert_eligible is None:
         alert_eligible = get_settings().live_alerts_enabled
-    print(
+    log.info(
         "Synced listings will be "
         f"{'alert-eligible (live alerts enabled)' if alert_eligible else 'shadow-only (not alert-eligible)'}."
     )
@@ -231,7 +248,15 @@ def sync_rentcast_shadow(
     for city in PILOT_CITIES:
         provider = factory(city)
         raw_records, pages = _fetch_all(provider)
-        request_count += getattr(provider, "request_count", pages)
+        city_requests = getattr(provider, "request_count", pages)
+        request_count += city_requests
+        log.info(
+            "RentCast %s: %s request(s), %s listing(s) returned.",
+            city,
+            city_requests,
+            len(raw_records),
+            extra={"city": city, "request_count": city_requests},
+        )
         returned_count += len(raw_records)
         county_records = [
             raw_record
@@ -271,6 +296,12 @@ def sync_rentcast_shadow(
     snapshot_inserted = snapshot_current_listings(engine)
     market_scores_changed = score_listings_against_market(engine)
 
+    log.info(
+        "RentCast shadow sync loaded %s listing(s) with %s total request(s).",
+        len(records),
+        request_count,
+        extra={"request_count": request_count},
+    )
     return RentCastShadowSyncResult(
         returned_count=returned_count,
         county_count=county_count,
