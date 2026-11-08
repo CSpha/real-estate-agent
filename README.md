@@ -291,6 +291,15 @@ with `SHADOW_INTERVAL_HOURS`. The next deadline is recovered from persisted run 
 `SHADOW_INITIAL_DELAY_HOURS` applies only before any run history exists; its
 initial deadline is persisted under the mounted data directory.
 
+After every scheduled run (success or failure) the runner also checks, through the
+ops channel only, for repeated RentCast failures (`PROVIDER_FAILURE_THRESHOLD`,
+default 2 consecutive attempts), unexplained repeated RentCast skips, RentCast usage at
+`RENTCAST_BUDGET_WARN_PERCENT` (default 80) of the monthly limit, and a database over
+`DB_SIZE_WARN_MB` (default 5000). Each state warns once and sends one recovery
+message; a monitoring error is logged and never fails a run. Inspect capacity
+read-only with `python -m app.ops.capacity` (size, largest tables, key row counts,
+and `BACKUP_DIR`/`data/backups` usage).
+
 The shadow service persists its generated CSV under
 `data/shadow-runner/shadow_scoring_review.csv` on the host. Manual review commands
 continue to write `data/shadow_scoring_review.csv`. Both locations are ignored
