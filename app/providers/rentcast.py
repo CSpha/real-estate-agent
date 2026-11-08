@@ -9,7 +9,9 @@ from typing import Any, Callable
 import requests
 
 from app.config import get_settings, require_setting
+from app.ops.logging import get_logger
 
+log = get_logger(__name__)
 
 RENTCAST_SALE_LISTINGS_URL = "https://api.rentcast.io/v1/listings/sale"
 RENTCAST_MAX_PAGE_SIZE = 500
@@ -161,12 +163,13 @@ class RentCastProvider:
                     raise RentCastAPIError(
                         _failure_message(status_code, attempts=attempt + 1)
                     ) from exc
-                print(
-                    "RentCast request failed"
-                    f"{f' with HTTP {status_code}' if status_code else ''}; "
-                    f"retrying in {delay:.1f}s "
-                    f"(retry {attempt + 1} of {self.max_retries}).",
-                    flush=True,
+                log.warning(
+                    "RentCast request failed%s; retrying in %.1fs (retry %s of %s).",
+                    f" with HTTP {status_code}" if status_code else "",
+                    delay,
+                    attempt + 1,
+                    self.max_retries,
+                    extra={"provider": "rentcast"},
                 )
                 self._sleep(delay)
         raise AssertionError("unreachable")

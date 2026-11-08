@@ -17,9 +17,36 @@ from app.alerts.formatting import (
 from app.db import get_engine
 
 
+# Sources whose deals must also have a usable comparable valuation. Low-confidence
+# or missing valuations are the flagged listings, so they never alert.
+VALUATION_REQUIRED_SOURCES = ("rentcast",)
+
+
 def get_potential_deal_events(engine: Engine | None = None):
+    """Deals to alert: each listing once, and again only at a lower list price.
+
+    A listing is re-scored on every run, so its scoring time is not a new event.
+    """
     query = text(
         """
+        WITH latest_valuation AS (
+            SELECT DISTINCT ON (source, source_listing_id)
+                source,
+                source_listing_id,
+                status,
+                confidence_label
+            FROM listing_comparable_valuations
+            ORDER BY source, source_listing_id, as_of_date DESC, id DESC
+        ),
+        previous_deal_alerts AS (
+            SELECT source, source_listing_id, payload_json
+            FROM alerts_sent
+            WHERE alert_type = 'potential_deal'
+            UNION ALL
+            SELECT source, source_listing_id, payload_json
+            FROM alert_outbox
+            WHERE alert_type = 'potential_deal'
+        )
         SELECT
             pd.source,
             pd.source_listing_id,
@@ -38,19 +65,30 @@ def get_potential_deal_events(engine: Engine | None = None):
         JOIN listings_current listing
           ON listing.source = pd.source
          AND listing.source_listing_id = pd.source_listing_id
-        LEFT JOIN alerts_sent a
-            ON a.alert_type = 'potential_deal'
-           AND a.source = pd.source
-           AND a.source_listing_id = pd.source_listing_id
-           AND a.event_timestamp = pd.scored_at
-        LEFT JOIN alert_outbox outbox
-            ON outbox.alert_type = 'potential_deal'
-           AND outbox.source = pd.source
-           AND outbox.source_listing_id = pd.source_listing_id
-           AND outbox.event_timestamp = pd.scored_at
+        LEFT JOIN latest_valuation valuation
+          ON valuation.source = pd.source
+         AND valuation.source_listing_id = pd.source_listing_id
         WHERE listing.alert_eligible
-          AND a.id IS NULL
-          AND outbox.id IS NULL
+          AND listing.scoring_eligible
+          AND listing.missing_from_feed_since IS NULL
+          AND (
+              pd.source <> ALL(:valuation_sources)
+              OR (
+                  valuation.status = 'valued'
+                  AND valuation.confidence_label <> 'low'
+              )
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM previous_deal_alerts previous
+              WHERE previous.source = pd.source
+                AND previous.source_listing_id = pd.source_listing_id
+                AND (
+                    previous.payload_json ->> 'list_price' IS NULL
+                    OR (previous.payload_json ->> 'list_price')::numeric
+                        <= pd.list_price
+                )
+          )
         ORDER BY pd.market_score DESC, pd.pct_below_or_above_median ASC;
         """
     )
@@ -58,7 +96,13 @@ def get_potential_deal_events(engine: Engine | None = None):
     engine = engine or get_engine()
 
     with engine.connect() as conn:
-        return conn.execute(query).mappings().all()
+        return (
+            conn.execute(
+                query, {"valuation_sources": list(VALUATION_REQUIRED_SOURCES)}
+            )
+            .mappings()
+            .all()
+        )
 
 
 def format_currency(value):
