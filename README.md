@@ -313,6 +313,8 @@ by Git. View scheduler activity with
 The scheduler runs 72 hours after each successful completion and retries failures
 after 6 hours by default. Restarts preserve the deadline; an overdue attempt
 runs on startup. An interrupted run is retried six hours after its start.
+Before each run the runner also refreshes the Freddie Mac PMMS mortgage rates when the stored data was last ingested six or more days ago; a failed refresh is logged and never affects the run.
+Set `SHADOW_PMMS_REFRESH_ENABLED=false` to turn this off.
 The 14-day readiness window starts at the first successful run; valuation
 coverage is checked across the latest three successful run dates. Docker Desktop and the host must stay
 running for scheduled work to execute.
