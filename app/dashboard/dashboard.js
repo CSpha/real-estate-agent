@@ -179,6 +179,11 @@ function closeDetail() {
 async function loadDashboard() {
   try {
     const response = await fetch("/dashboard/data", { headers: { Accept: "application/json" } });
+    if (response.status === 401) {
+      // Signed out or the token was rotated: go back to the sign-in page.
+      window.location.assign("/login");
+      return;
+    }
     if (!response.ok) throw new Error("Dashboard request failed");
     const data = await response.json();
     state.listings = data.listings;

@@ -334,6 +334,8 @@ unless their terms and an explicit agreement authorize it.
 - [x] `/health` reports database connectivity, last successful sync freshness,
       alert backlog, and permanent failures
 - [x] Opt-in bearer-token authentication and per-client rate limiting
+- [x] Dashboard sign-in for remote devices: read-only session cookie, startup
+      validation of auth and rate-limit settings, and a Tailscale runbook
 - [x] Structured JSON API request logs
 - [x] Daily PostgreSQL backups and weekly isolated restore verification
       (first restore verified September 11: 34 tables, 6,123 rows)
@@ -619,7 +621,11 @@ Still needed:
   for 1.25 coverage. Operational hardening: redacted Slack connection errors,
   Postgres bound to `127.0.0.1`, API auth settings passed through Compose,
   manual outbox sends gated on `LIVE_ALERTS_ENABLED`, and an idling disabled
-  alert worker.
+  alert worker. The dashboard gained a sign-in page so it can be opened from a
+  phone or laptop over Tailscale; the session cookie only allows reads. The
+  API now refuses to start on an invalid rate limit or a missing or short
+  token, rate-limits failed sign-ins, exempts dashboard assets correctly, and
+  requires the `Bearer` scheme.
 
 ## External references
 

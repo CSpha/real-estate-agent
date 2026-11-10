@@ -66,10 +66,11 @@ Profiled services start only when you name the profile (or the service).
    | `SHADOW_ENABLE_RENTCAST_API_CALLS` | `shadow-runner` | Defaults to `false`. When `true`, each run may use up to 9 RentCast requests, within the monthly budget. |
    | `BACKUP_OFFSITE_DIR` | `backup` | Host folder for an off-machine copy. Use forward slashes. |
 
-   `API_AUTH_REQUIRED`, `API_AUTH_TOKEN` and `API_RATE_LIMIT_PER_MINUTE` are in
-   `.env.example` and are passed to the `api` container (auth off and 120
-   requests per minute unless you set them). See
-   [credential rotation](credential-rotation.md#api_auth_token).
+   `API_AUTH_REQUIRED`, `API_AUTH_TOKEN`, `API_RATE_LIMIT_PER_MINUTE` and
+   `API_COOKIE_SECURE` are in `.env.example` and are passed to the `api`
+   container (auth off, 120 requests per minute, and a non-Secure cookie unless
+   you set them). See [credential rotation](credential-rotation.md#api_auth_token)
+   and [reaching the dashboard from other devices](#reaching-the-dashboard-from-other-devices).
 
 5. Check that Compose accepts the file. `--quiet` prints nothing on success.
    Do not run `docker compose config` without `--quiet` and paste the output:
@@ -270,6 +271,59 @@ version:
 
 Alerts already in `alert_outbox` stay there. They are sent when the worker next
 runs, which may be much later.
+
+## Reaching the dashboard from other devices
+
+The API listens on `127.0.0.1:8000`, so only the PC can reach it. To open the
+dashboard from a phone or laptop, use [Tailscale](https://tailscale.com): a
+private network between your own devices. Nothing is opened to the internet and
+no router port forwarding is needed. Keep the Compose port binding as it is.
+
+1. Install Tailscale on the PC, the phone, and the laptop, and sign in to the
+   same Tailscale account on each.
+2. Turn on auth. In `.env` on the PC:
+
+   ```env
+   API_AUTH_REQUIRED=true
+   API_AUTH_TOKEN=<at least 32 random characters>
+   API_COOKIE_SECURE=true
+   ```
+
+   Generate the token with
+   `python -c "import secrets; print(secrets.token_urlsafe(32))"` and keep it in
+   a password manager; you type it once per device. Then recreate the API:
+
+   ```powershell
+   docker compose up -d api
+   docker compose logs --tail 20 api
+   ```
+
+   If the token is missing or too short, the log shows why and the API does
+   not start.
+3. Share the local port over HTTPS inside your tailnet (on the PC):
+
+   ```powershell
+   tailscale serve --bg 8000
+   tailscale serve status
+   ```
+
+   The first time, Tailscale may ask you to enable HTTPS certificates for your
+   tailnet; follow the link it prints. `status` shows the address, for example
+   `https://<pc-name>.<tailnet>.ts.net`. `--bg` keeps it running across
+   restarts.
+4. On the phone or laptop, with Tailscale connected, open
+   `https://<pc-name>.<tailnet>.ts.net/dashboard`, enter the token, and
+   bookmark the page. The sign-in lasts 30 days.
+
+Notes:
+
+- Do not use `tailscale funnel`; it publishes the API to the whole internet.
+- The PC must be awake and Docker Desktop running (see below).
+- Through `tailscale serve`, every device reaches the API as `127.0.0.1`, so
+  they share one rate-limit bucket (120 requests per minute by default). One
+  dashboard load uses about two counted requests.
+- To stop sharing: `tailscale serve reset`. To sign every device out, rotate
+  `API_AUTH_TOKEN` ([credential rotation](credential-rotation.md#api_auth_token)).
 
 ## Keeping Docker Desktop running
 

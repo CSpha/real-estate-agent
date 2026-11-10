@@ -35,6 +35,7 @@ services:
       API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
       API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
+      API_COOKIE_SECURE: ${API_COOKIE_SECURE:-false}
     command:
       - sh
       - -c
