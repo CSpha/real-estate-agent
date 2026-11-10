@@ -1,6 +1,6 @@
 # Real Estate Agent Development Roadmap
 
-Last reviewed: October 28, 2026 (code through commit `23f0f10`, September 18)
+Last reviewed: November 10, 2026 (code through commit `6d714b9`, November 9)
 
 ## Goal
 
@@ -13,10 +13,10 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 | Alert pipeline (`app.run_pipeline`) | Working end to end, but still loads only `data/sample_listings.csv` |
 | Shadow pipeline (`app.shadow.run_pipeline`) | Runs real Wayne County data; alert-isolated; three-day Docker scheduler |
 | Deal Score v2 | All six components and the 100-point aggregate implemented; thresholds versioned in `deal_score_policies` |
-| Rental underwriting | RentCast rent AVM, cash flow, cap rate, DSCR sizing, fixed-rate growth scenarios |
-| Mortgage-rate outlook | Multi-signal model and backtesting implemented; calibration rejected, not deployed |
-| Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI |
-| Alert promotion | **Approved November 6**: live alerts via the `alert-worker` once `LIVE_ALERTS_ENABLED=true`; flagged listings excluded from deal alerts; transaction validity still outstanding |
+| Rental underwriting | RentCast rent AVM, cash flow, cap rate, DSCR sizing, fixed-rate growth scenarios; affordability at 10%/20% down for conventional and DSCR loans |
+| Mortgage-rate outlook | Multi-signal model and backtesting implemented; calibration rejected, not deployed; PMMS refreshed weekly by the shadow runner |
+| Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI, deployment and incident runbooks |
+| Alert promotion | **Live since November 8** via the `alert-worker` (`LIVE_ALERTS_ENABLED=true`); flagged listings excluded from deal alerts; transaction validity still outstanding |
 
 Latest schema revision: `0022_rental_assumption_policies`.
 
@@ -124,6 +124,24 @@ Operations
    values are still the original hand-picked ones: the database holds no market
    rent history (one AVM estimate per listing, single date), so
    `derive_rental_assumptions` refuses until such a source is ingested.
+6. **Readiness reports not ready until the November 15 run.** Run 39
+   (November 6) stored 0 supported valuations because the backfill skipped
+   alert-eligible listings (fixed November 8). Readiness takes the minimum
+   coverage over the latest three run dates, so run 39 keeps
+   `supported_valuation_coverage_at_least_70pct` failing until it leaves the
+   window. Run 40 (November 9) valued 87 of 88 comparable-ready listings.
+   Live alerts do not depend on this check.
+7. **Open operational hardening items** (verified during the November 8
+   runbook review):
+   - `alert_outbox.last_error` can contain the Slack webhook path, because
+     connection-error text from `requests` includes the URL.
+   - Compose publishes Postgres on all interfaces; bind it to `127.0.0.1`.
+   - The `api` service is not passed `API_AUTH_REQUIRED`, `API_AUTH_TOKEN`, or
+     `API_RATE_LIMIT_PER_MINUTE` (low risk while it binds to `127.0.0.1`).
+   - A manual `python -m app.alerts.process_alert_outbox` run does not check
+     `LIVE_ALERTS_ENABLED`.
+   - With `LIVE_ALERTS_ENABLED=false`, `alert-worker` exits and
+     `restart: unless-stopped` restarts it in a loop.
 
 ## Alert promotion gates
 
@@ -154,22 +172,29 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 
 ## Near-term priorities
 
-1. Watch monthly RentCast usage in the scheduler logs (the October 31 and
-   November 3 runs each fetched listings with 3 requests).
-2. Keep Docker Desktop running (start at sign-in) and review each new report in
+1. Watch monthly RentCast usage in the scheduler logs (each run uses 3
+   requests; 9 of 40 used in November after run 40).
+2. Fix the operational hardening items in known issue 7. Making manual outbox
+   sends respect `LIVE_ALERTS_ENABLED` changes alert behavior, so confirm it
+   first.
+3. Decide whether affordability (monthly cost and DSCR coverage) should appear
+   in deal alerts, and whether to replace the 1.50% tax assumption with a
+   per-parcel auditor lookup (Wayne County effective rates are about
+   1.2–1.3%, applied to appraised value rather than price).
+4. Keep Docker Desktop running (start at sign-in) and review each new report in
    `data/shadow-runner/`.
-3. Obtain a transaction-level valid-sales export: download a sample from the
+5. Obtain a transaction-level valid-sales export: download a sample from the
    auditor's Sales Report page or send the drafted request. Do not build a parser
    around an assumed format.
-4. Obtain evidence for flagged listings: the 18 low-confidence valuations
+6. Obtain evidence for flagged listings: the 18 low-confidence valuations
    ([review](docs/low-confidence-review.md)) and the no-comparables home at
    254 W Wayne Ave ([scoring gaps](docs/scoring-gap-review.md)).
-5. Decide whether to add a Fredericksburg abbreviation mapping to the auditor
+7. Decide whether to add a Fredericksburg abbreviation mapping to the auditor
    parser. Keep multi-value property records quarantined until a deterministic
    parcel/dwelling rule is documented.
-6. Keep the computer awake or accept wake-time delays; shadow runs, backups,
+8. Keep the computer awake or accept wake-time delays; shadow runs, backups,
    and ops warnings pause while it sleeps.
-7. Add geographic bounding-box criteria once provider coordinates are available.
+9. Add geographic bounding-box criteria once provider coordinates are available.
 
 ## Design principles
 
@@ -286,12 +311,13 @@ unless their terms and an explicit agreement authorize it.
 - [x] Dry-run and test-channel worker modes that leave the outbox unchanged
 - [x] Send real messages to a Slack test channel
       (`python -m app.alerts.send_test_alerts`; first sent November 5)
-- [x] Slack Block Kit formatting: address with map link, current and previous
+- [x] Slack Block Kit formatting: address with Zillow link, current and previous
       price, change, county median comparison, score reason, listing ID, and a
       plain-text fallback
 - [ ] Block Kit additions that need provider fields: listing URL, permitted
       primary photo, key attributes, and data source/attribution
-- [x] Digest delivery: more than 3 due alerts go out as digests of up to 10
+- [x] Digest delivery: more than 3 due alerts go out as evenly sized digests
+      of up to 10
 
 ### Acceptance criteria
 
@@ -320,8 +346,8 @@ unless their terms and an explicit agreement authorize it.
 - [x] Separately deployed production alert worker and alert-processing schedule
       (`alert-worker`, compose profile `alerts`, after each successful run)
 - [x] Structured logging with run, provider, and event IDs in pipelines and workers
-      (shadow pipeline, scheduler, RentCast sync; `LOG_FORMAT=json`; alert
-      outbox and worker logging is a follow-up)
+      (shadow pipeline, scheduler, RentCast sync, alert outbox, and alert
+      worker; `LOG_FORMAT=json`)
 - [x] Operational Slack warning for failed, overdue, or unreadable shadow runs,
       once per problem plus a recovery message (`SLACK_OPS_WEBHOOK_URL`)
 - [x] External heartbeat that warns when Docker or the whole runner is down
@@ -471,8 +497,13 @@ Primary Mortgage Market Survey is the authoritative rate source.
 - [ ] Point-in-time CPI and PMMS vintages to remove revision bias
 - [ ] Improve signals until a chronological holdout beats the stable-rate
       baseline; do not deploy the current rejected calibration scales
-- [ ] Affordability scenarios per listing at the benchmark rate and ±0.50
+- [x] Affordability scenarios per listing at the benchmark rate and ±0.50
       points, with explicit loan, tax, insurance, and HOA assumptions
+      (`python -m app.market.affordability`: 10% and 20% down, conventional
+      with PMI under 20% down, DSCR with a rate premium and no PMI, and the
+      rent needed for 1.25 coverage)
+- [x] Weekly PMMS refresh before each shadow run once the newest ingest is
+      six or more days old (`SHADOW_PMMS_REFRESH_ENABLED`)
 
 ### Acceptance criteria
 
@@ -573,6 +604,18 @@ Still needed:
   alert-eligible listings, so run 39 stored 0 supported valuations and deal
   alerts used the November 3 valuations; fixed so every comparable-ready
   listing is valued.
+- **November 8:** Alert addresses link to a Zillow address search instead of
+  Google Maps. Affordability scenarios (10% and 20% down, conventional and
+  DSCR, rent needed for 1.25 coverage). Digests split evenly, and the outbox
+  and alert worker log with structured context. Deployment, credential
+  rotation, and incident-response runbooks. The shadow runner refreshes PMMS
+  weekly (first refresh: 30-year 7.18% as of November 5). 541 unit and 40
+  integration tests passed after merging PRs #15–#20.
+- **November 9:** Run 40 synced 108 RentCast listings (3 requests, 8 newly
+  missing from the feed), stored 88 comparable valuations (87 of 88
+  comparable-ready listings supported), skipped the PMMS refresh as fresh,
+  and sent its heartbeat. The alert worker sent 1 price drop and 1 potential
+  deal with no failures.
 
 ## External references
 
