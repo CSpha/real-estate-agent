@@ -17,6 +17,7 @@ from typing import Any, Callable
 from sqlalchemy import Engine, text
 
 from app.alerts import send_potential_deal_alerts, send_price_drop_alerts
+from app.alerts.affordability import attach_affordability
 from app.alerts.formatting import build_digest_message, context_block
 from app.alerts.outbox import MIN_SEND_INTERVAL_SECONDS
 from app.alerts.process_alert_outbox import SUMMARIZERS
@@ -95,10 +96,16 @@ POTENTIAL_DEAL_SAMPLE_SQL = text(
 )
 
 SAMPLES = (
-    ("price_drop", PRICE_DROP_SAMPLE_SQL, send_price_drop_alerts.format_slack_message),
+    (
+        "price_drop",
+        PRICE_DROP_SAMPLE_SQL,
+        "current_price",
+        send_price_drop_alerts.format_slack_message,
+    ),
     (
         "potential_deal",
         POTENTIAL_DEAL_SAMPLE_SQL,
+        "list_price",
         send_potential_deal_alerts.format_slack_message,
     ),
 )
@@ -126,11 +133,13 @@ def build_test_messages(
     engine = engine or get_engine()
     messages = []
     with engine.connect() as conn:
-        for alert_type, query, formatter in SAMPLES:
+        for alert_type, query, price_field, formatter in SAMPLES:
             events = conn.execute(
                 query, {"source": source, "limit": limit}
             ).mappings().all()
             print(f"Found {len(events)} {alert_type} event(s) for {source}.")
+            # Same monthly-cost figures a live alert would store when queued.
+            events = attach_affordability(events, price_field, engine)
             for event in events:
                 messages.append(
                     (alert_type, str(event["source_listing_id"]), formatter(event), event)

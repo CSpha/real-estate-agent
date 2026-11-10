@@ -2,8 +2,12 @@ import json
 
 from sqlalchemy import Engine, text
 
+from app.alerts.affordability import attach_affordability
 from app.alerts.formatting import (
     address_link,
+    affordability_block,
+    affordability_brief,
+    affordability_lines,
     context_block,
     escape,
     fields_block,
@@ -121,17 +125,26 @@ def _vs_median(event):
 
 
 def format_slack_message(event):
+    affordability = affordability_block(event)
     return {
-        "text": (
-            f"Potential deal: {full_address(event)}\n"
-            f"County: {event['county_name']}\n"
-            f"List price: {format_currency(event['list_price'])}\n"
-            f"County median sale price: {format_currency(event['county_median_sale_price'])}\n"
-            f"Difference from median: {format_currency(event['price_vs_county_median'])}\n"
-            f"Percent vs median: {format_percent(event['pct_below_or_above_median'])}\n"
-            f"Market score: {event['market_score']}\n"
-            f"Reason: {event['score_reason']}\n"
-            f"Listing ID: {event['source_listing_id']}"
+        "text": "\n".join(
+            [
+                (
+                    f"Potential deal: {full_address(event)}\n"
+                    f"County: {event['county_name']}\n"
+                    f"List price: {format_currency(event['list_price'])}\n"
+                    "County median sale price: "
+                    f"{format_currency(event['county_median_sale_price'])}\n"
+                    "Difference from median: "
+                    f"{format_currency(event['price_vs_county_median'])}\n"
+                    "Percent vs median: "
+                    f"{format_percent(event['pct_below_or_above_median'])}\n"
+                    f"Market score: {event['market_score']}\n"
+                    f"Reason: {event['score_reason']}\n"
+                    f"Listing ID: {event['source_listing_id']}"
+                ),
+                *affordability_lines(event),
+            ]
         ),
         "blocks": [
             header_block(f":moneybag: Potential deal: {event['address']}"),
@@ -148,6 +161,7 @@ def format_slack_message(event):
                 ]
             ),
             section_block(f"_{escape(event['score_reason'])}_"),
+            *([affordability] if affordability else []),
             context_block(f"Listing ID {escape(event['source_listing_id'])}"),
         ],
     }
@@ -161,6 +175,7 @@ def summarize_event(event):
     detail = (
         f"{format_currency(event['list_price'])}, {magnitude} {position} the "
         f"county median, score {event['market_score']}"
+        f"{affordability_brief(event)}"
     )
     return (
         f":moneybag: *{address_link(event)}*  {escape(detail)}",
@@ -177,6 +192,7 @@ def enqueue_potential_deal_events(engine: Engine | None = None) -> int:
     events = get_potential_deal_events(engine)
     if not events:
         return 0
+    events = attach_affordability(events, "list_price", engine)
 
     insert_sql = text(
         """
@@ -228,6 +244,7 @@ def enqueue_potential_deal_events(engine: Engine | None = None) -> int:
                     ),
                     "market_score": _optional_str(event["market_score"]),
                     "score_reason": event["score_reason"],
+                    "affordability": event["affordability"],
                     "event_timestamp": event["event_timestamp"].isoformat(),
                 }
             ),

@@ -23,6 +23,7 @@ from app.alerts.send_price_drop_alerts import (
     get_price_drop_events,
     record_alert,
 )
+from app.alerts.affordability import attach_affordability
 from app.alerts.outbox import deliver_pending_alerts
 from app.alerts.process_alert_outbox import FORMATTERS, SUMMARIZERS
 from app.alerts.send_potential_deal_alerts import (
@@ -55,6 +56,7 @@ from app.market.mortgage_rate_outlook_v2 import (
     generate_multi_signal_outlooks,
 )
 from app.market.mortgage_rates import (
+    PMMS_SOURCE,
     get_rate_trend,
     load_pmms_csv,
     refresh_pmms_if_stale,
@@ -1375,6 +1377,92 @@ def test_affordability_reads_latest_benchmark_and_eligible_listings(
                 {"source": source},
             )
 
+
+
+def test_alert_affordability_uses_latest_pmms_rate_and_rent_estimate(
+    postgres_engine, empty_pmms_table
+):
+    source = "alert_afford_test"
+    events = [
+        {"source": source, "source_listing_id": "rented", "list_price": "299000"},
+        {"source": source, "source_listing_id": "no-rent", "list_price": "299000"},
+    ]
+    # No stored PMMS rate: alerts go out without the section, never a default.
+    unpriced = attach_affordability(events, "list_price", postgres_engine)
+    assert [event["affordability"] for event in unpriced] == [None, None]
+
+    with postgres_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO mortgage_rate_observations (
+                    source, product_type, observation_date, rate_percent,
+                    methodology_version, source_url
+                )
+                VALUES (
+                    :source, '30_year_fixed', '2026-11-05', 7.18,
+                    'application_based', 'https://example.test/pmms.csv'
+                )
+                """
+            ),
+            {"source": PMMS_SOURCE},
+        )
+        for listing_id in ("rented", "no-rent"):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO listings_current (
+                        source, source_listing_id, list_price, scoring_eligible
+                    )
+                    VALUES (:source, :id, 299000, TRUE)
+                    """
+                ),
+                {"source": source, "id": listing_id},
+            )
+        conn.execute(
+            text(
+                """
+                INSERT INTO listing_rent_estimates (
+                    source, source_listing_id, provider, as_of_date,
+                    request_fingerprint, monthly_rent, comparable_count,
+                    request_json, response_json
+                )
+                VALUES (
+                    :source, 'rented', 'rentcast', '2026-11-01', repeat('c', 64),
+                    1450, 5, '{}'::jsonb, '{}'::jsonb
+                )
+                """
+            ),
+            {"source": source},
+        )
+
+    try:
+        rented, no_rent = attach_affordability(events, "list_price", postgres_engine)
+        assert rented["affordability"] == {
+            "rate_pct": "7.180",
+            "rate_as_of": "2026-11-05",
+            "property_tax_rate_pct": "1.50",
+            "insurance_rate_pct": "0.50",
+            "conventional_10_down": "2433.44",
+            "conventional_20_down": "2118.75",
+            "dscr_rate_pct": "8.180",
+            "dscr_20_down": "2283.60",
+            "monthly_rent": "1450.00",
+            "dscr": "0.63",
+            "dscr_target": "1.25",
+            "rent_for_target": "2854.50",
+        }
+        assert no_rent["affordability"]["monthly_rent"] is None
+        assert no_rent["affordability"]["dscr"] is None
+        # The payload must survive the JSON round trip into alert_outbox.
+        assert json.loads(json.dumps(rented))["affordability"] == rented["affordability"]
+    finally:
+        with postgres_engine.begin() as conn:
+            for table in ("listing_rent_estimates", "listings_current"):
+                conn.execute(
+                    text(f"DELETE FROM {table} WHERE source = :source"),
+                    {"source": source},
+                )
 
 def test_mortgage_rate_outlooks_are_versioned_and_idempotent(postgres_engine):
     latest = datetime(2026, 7, 23)

@@ -5,6 +5,7 @@ Slack uses for notifications and clients that cannot render blocks.
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote
@@ -108,3 +109,60 @@ def build_digest_message(
             context_block("Sent as one digest because several alerts were due at once."),
         ],
     }
+
+
+def _rate(value: Any) -> str:
+    amount = to_decimal(value)
+    return "N/A" if amount is None else f"{amount:.2f}%"
+
+
+def _as_of(value: Any) -> str:
+    # "2026-11-05" -> "Nov 5"; anything unparseable is shown as stored.
+    try:
+        return date.fromisoformat(str(value)).strftime("%b %d").replace(" 0", " ")
+    except ValueError:
+        return str(value)
+
+
+def affordability_lines(event: Mapping[str, Any]) -> list[str]:
+    """Plain-text monthly cost and rent coverage, or [] when not computed."""
+    info = event.get("affordability")
+    if not info:
+        return []
+    lines = [
+        f"Est. monthly cost at the {_rate(info['rate_pct'])} 30-year PMMS rate "
+        f"(as of {_as_of(info['rate_as_of'])}; {_rate(info['property_tax_rate_pct'])} "
+        f"tax, {_rate(info['insurance_rate_pct'])} insurance):",
+        f"Conventional: {money(info['conventional_10_down'])} with 10% down "
+        f"(incl. PMI), {money(info['conventional_20_down'])} with 20% down",
+        f"DSCR loan, 20% down at {_rate(info['dscr_rate_pct'])}: "
+        f"{money(info['dscr_20_down'])}",
+    ]
+    target = to_decimal(info["dscr_target"])
+    needed = f"{money(info['rent_for_target'])}/mo rent needed for {target} DSCR"
+    if info.get("monthly_rent") is None:
+        lines.append(f"No rent estimate on file; {needed}")
+    else:
+        lines.append(
+            f"Rent est. {money(info['monthly_rent'])}/mo, DSCR {info['dscr']}; {needed}"
+        )
+    return lines
+
+
+def affordability_block(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    lines = affordability_lines(event)
+    if not lines:
+        return None
+    title, *rest = lines
+    return section_block("\n".join([f"*{escape(title)}*", *(escape(line) for line in rest)]))
+
+
+def affordability_brief(event: Mapping[str, Any]) -> str:
+    """Digest suffix such as ", est. $2,119/mo with 20% down, DSCR 0.63"."""
+    info = event.get("affordability")
+    if not info:
+        return ""
+    brief = f", est. {money(info['conventional_20_down'])}/mo with 20% down"
+    if info.get("dscr") is not None:
+        brief += f", DSCR {info['dscr']}"
+    return brief
