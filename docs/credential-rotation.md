@@ -280,7 +280,9 @@ yet.
 - Checked by the API when `API_AUTH_REQUIRED=true`. Clients send
   `Authorization: Bearer <token>`. `/health` is exempt. There is one token and
   no overlap period, so clients using the old token get HTTP 401 the moment the
-  API restarts.
+  API restarts. Dashboard sign-ins are derived from the token, so rotating it
+  also signs out every browser; sign in again with the new token. The API
+  refuses to start if auth is on and the token is shorter than 32 characters.
 - **Compose:** `docker-compose.yml` passes `API_AUTH_REQUIRED` (default
   `false`), `API_AUTH_TOKEN` (default empty) and `API_RATE_LIMIT_PER_MINUTE`
   (default `120`) from `.env` to the `api` service. `.env` is not baked into the

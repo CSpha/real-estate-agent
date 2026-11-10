@@ -2,13 +2,16 @@ import json
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
+from html import escape
+from urllib.parse import parse_qs
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -26,10 +29,29 @@ from app.api_limits import (
     set_local_timeout,
     set_page_headers,
 )
-from app.api_security import rate_limiter, require_api_token
+from app.api_security import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE_SECONDS,
+    auth_required,
+    cookie_secure,
+    is_rate_limit_exempt,
+    rate_limiter,
+    require_api_token,
+    session_value,
+    token_matches,
+    validate_api_security_settings,
+)
 
 
-app = FastAPI(title="Real Estate Agent API")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # A bad API_RATE_LIMIT_PER_MINUTE or a missing/short API_AUTH_TOKEN stops
+    # startup with a clear message instead of failing every request.
+    validate_api_security_settings()
+    yield
+
+
+app = FastAPI(title="Real Estate Agent API", lifespan=lifespan)
 app.include_router(saved_searches_router)
 DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
 app.mount(
@@ -52,14 +74,16 @@ async def protect_and_log_requests(request: Request, call_next):
     started = time.perf_counter()
     client = request.client.host if request.client else "unknown"
     try:
-        require_api_token(request)
-        if request.url.path not in {"/health", "/dashboard-assets"} and not rate_limiter.allow(client):
+        if not is_rate_limit_exempt(request.url.path) and not rate_limiter.allow(client):
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
+        require_api_token(request)
         response = await call_next(request)
     except HTTPException as exc:
-        from fastapi.responses import JSONResponse
-
-        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        if exc.status_code == 401 and request.method == "GET" and request.url.path == "/dashboard":
+            # Browsers get the sign-in page instead of a JSON error.
+            response = RedirectResponse("/login", status_code=303)
+        else:
+            response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     request_logger.info(
         json.dumps(
             {
@@ -194,6 +218,79 @@ def analyst_feature_enabled() -> bool:
 @app.get("/")
 def root():
     return {"message": "Real Estate Agent API is running"}
+
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in · Property Signal</title>
+    <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg">
+    <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
+  </head>
+  <body>
+    <main class="login-main">
+      <form class="login-card" method="post" action="/login">
+        <h1>Property Signal</h1>
+        <p>Enter the API token from <code>.env</code> to open the dashboard.</p>
+        {error}
+        <label for="token">API token</label>
+        <input id="token" name="token" type="password" autocomplete="current-password"
+               autocapitalize="off" spellcheck="false" required autofocus>
+        <button type="submit">Sign in</button>
+      </form>
+    </main>
+  </body>
+</html>
+"""
+LOGIN_FORM_MAX_BYTES = 4096
+
+
+def _login_page(error: str = "", status_code: int = 200) -> HTMLResponse:
+    message = f'<p class="login-error" role="alert">{escape(error)}</p>' if error else ""
+    return HTMLResponse(
+        LOGIN_PAGE.replace("{error}", message),
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    if not auth_required():
+        return RedirectResponse("/dashboard", status_code=303)
+    return _login_page()
+
+
+@app.post("/login", include_in_schema=False)
+async def login(request: Request):
+    if not auth_required():
+        return RedirectResponse("/dashboard", status_code=303)
+    body = await request.body()
+    if len(body) > LOGIN_FORM_MAX_BYTES:
+        return _login_page("That request was too large.", status_code=413)
+    token = parse_qs(body.decode("utf-8", "replace")).get("token", [""])[0].strip()
+    if not token_matches(token):
+        return _login_page("That token is not correct.", status_code=401)
+    response = RedirectResponse("/dashboard", status_code=303)
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_value(),
+        max_age=SESSION_MAX_AGE_SECONDS,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=cookie_secure(request),
+    )
+    return response
+
+
+@app.post("/logout", include_in_schema=False)
+def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 @app.get("/dashboard", include_in_schema=False)

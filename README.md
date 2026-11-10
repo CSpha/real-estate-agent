@@ -438,7 +438,12 @@ python -m app.transforms.apply_auditor_sqft_candidates
 
 With the API running, open `http://127.0.0.1:8000/dashboard` to use the local
 Property Signal dashboard. It shows pipeline health, shadow-promotion readiness,
-recent runs, and the current listing scores from Postgres. Listings can be
+recent runs, and the current listing scores from Postgres. The header badge
+reports alert state from the database: "Live alerts on" with the last send time
+when any current RentCast listing is alert-eligible, otherwise "Shadow mode",
+plus counts of queued and permanently failed alerts (red when any failed). It
+does not read `LIVE_ALERTS_ENABLED`, which the `api` container is not given.
+Listings can be
 searched, filtered, sorted, and opened to inspect their valuation evidence and
 score components. The dashboard is read-only and clearly marks the data as
 provisional; it does not enable alerts or change listing records.
@@ -597,12 +602,23 @@ Runbooks: [deployment](docs/deployment.md),
 alerts at once.
 
 Before exposing the API outside the local machine, set `API_AUTH_REQUIRED=true`
-and a long random `API_AUTH_TOKEN`. Requests then require
+and a random `API_AUTH_TOKEN` of at least 32 characters. Requests then require
 `Authorization: Bearer <token>`; `/health` remains available to a monitoring
 system. `API_RATE_LIMIT_PER_MINUTE` caps requests per process and client IP,
-with a default of 120. Compose passes all three from `.env` to the `api`
-container; recreate it (`docker compose up -d api`) after changing them. API
-request logs are structured JSON and omit tokens and query strings.
+with a default of 120; failed sign-ins and unauthenticated requests count
+against it. The API refuses to start, with a clear message, if the limit is not
+a whole number of at least 1 or auth is on without a long enough token.
+Compose passes these settings from `.env` to the `api` container; recreate it
+(`docker compose up -d api`) after changing them. API request logs are
+structured JSON and omit tokens and query strings.
+
+With auth on, browsers opening `/dashboard` are sent to a sign-in page
+(`/login`). Entering the token sets an HttpOnly session cookie for 30 days that
+allows read-only (GET) requests, so the dashboard works but the cookie cannot
+create, change, or delete anything; writes still need the bearer header.
+Rotating `API_AUTH_TOKEN` signs every browser out. `POST /logout` clears the
+cookie. To open the dashboard from a phone or laptop, see
+[remote dashboard access](docs/deployment.md#reaching-the-dashboard-from-other-devices).
 List endpoints (`/listings`, `/alerts`, `/saved-searches`, saved-search
 evaluations, analyses, reviews, `/score`) take `limit` (default 50, max 200;
 analyses max 100) and `offset`; invalid values return 422. Bodies stay plain
