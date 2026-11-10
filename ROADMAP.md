@@ -131,17 +131,13 @@ Operations
    `supported_valuation_coverage_at_least_70pct` failing until it leaves the
    window. Run 40 (November 9) valued 87 of 88 comparable-ready listings.
    Live alerts do not depend on this check.
-7. **Open operational hardening items** (verified during the November 8
-   runbook review):
-   - `alert_outbox.last_error` can contain the Slack webhook path, because
-     connection-error text from `requests` includes the URL.
-   - Compose publishes Postgres on all interfaces; bind it to `127.0.0.1`.
-   - The `api` service is not passed `API_AUTH_REQUIRED`, `API_AUTH_TOKEN`, or
-     `API_RATE_LIMIT_PER_MINUTE` (low risk while it binds to `127.0.0.1`).
-   - A manual `python -m app.alerts.process_alert_outbox` run does not check
-     `LIVE_ALERTS_ENABLED`.
-   - With `LIVE_ALERTS_ENABLED=false`, `alert-worker` exits and
-     `restart: unless-stopped` restarts it in a loop.
+7. **Resolved November 10: operational hardening items** found during the
+   November 8 runbook review. Slack connection errors are redacted before they
+   reach `alert_outbox.last_error`, logs, or ops warnings; Postgres is published
+   on `127.0.0.1` only; the `api` service receives `API_AUTH_REQUIRED`,
+   `API_AUTH_TOKEN`, and `API_RATE_LIMIT_PER_MINUTE`; manual
+   `process_alert_outbox` sends refuse unless `LIVE_ALERTS_ENABLED=true`; and a
+   disabled `alert-worker` idles instead of restart-looping.
 
 ## Alert promotion gates
 
@@ -174,13 +170,12 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
 
 1. Watch monthly RentCast usage in the scheduler logs (each run uses 3
    requests; 9 of 40 used in November after run 40).
-2. Fix the operational hardening items in known issue 7. Making manual outbox
-   sends respect `LIVE_ALERTS_ENABLED` changes alert behavior, so confirm it
-   first.
-3. Decide whether affordability (monthly cost and DSCR coverage) should appear
-   in deal alerts, and whether to replace the 1.50% tax assumption with a
-   per-parcel auditor lookup (Wayne County effective rates are about
-   1.2–1.3%, applied to appraised value rather than price).
+2. Rebuild `api`, `alert-worker`, and `postgres` to pick up the November 10
+   hardening and alert affordability changes, then check the next alerts show
+   the monthly-cost section.
+3. Later: replace the 1.50% property-tax assumption with a per-parcel auditor
+   lookup (Wayne County effective rates are about 1.2–1.3%, applied to
+   appraised value rather than price). Alerts use 1.50% for now.
 4. Keep Docker Desktop running (start at sign-in) and review each new report in
    `data/shadow-runner/`.
 5. Obtain a transaction-level valid-sales export: download a sample from the
@@ -314,6 +309,8 @@ unless their terms and an explicit agreement authorize it.
 - [x] Slack Block Kit formatting: address with Zillow link, current and previous
       price, change, county median comparison, score reason, listing ID, and a
       plain-text fallback
+- [x] Estimated monthly cost (conventional 10% and 20% down, DSCR loan 20%
+      down) and rent coverage in price-drop and potential-deal alerts
 - [ ] Block Kit additions that need provider fields: listing URL, permitted
       primary photo, key attributes, and data source/attribution
 - [x] Digest delivery: more than 3 due alerts go out as evenly sized digests
@@ -616,6 +613,13 @@ Still needed:
   comparable-ready listings supported), skipped the PMMS refresh as fresh,
   and sent its heartbeat. The alert worker sent 1 price drop and 1 potential
   deal with no failures.
+- **November 10:** Alerts show the estimated monthly cost at the latest PMMS
+  rate (conventional 10% and 20% down, DSCR loan 20% down; 1.50% tax, 0.50%
+  insurance) with the DSCR from the stored rent estimate and the rent needed
+  for 1.25 coverage. Operational hardening: redacted Slack connection errors,
+  Postgres bound to `127.0.0.1`, API auth settings passed through Compose,
+  manual outbox sends gated on `LIVE_ALERTS_ENABLED`, and an idling disabled
+  alert worker.
 
 ## External references
 
