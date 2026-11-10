@@ -168,13 +168,16 @@ def test_enabled_worker_without_webhook_is_a_hard_exit(monkeypatch):
         worker.main()
 
 
-def test_idle_while_disabled_logs_once_and_sleeps_hourly(caplog):
+def test_idle_while_disabled_logs_once_and_sleeps_hourly(monkeypatch, capsys):
+    # App loggers do not propagate to the root logger, so caplog never sees
+    # them; read the stdout handler's output instead.
+    monkeypatch.setenv("LOG_FORMAT", "text")
     sleeps = []
 
-    with caplog.at_level("WARNING"):
-        worker.idle_while_disabled(sleep=sleeps.append, max_idles=3)
+    worker.idle_while_disabled(sleep=sleeps.append, max_idles=3)
 
     assert sleeps == [worker.IDLE_SLEEP_SECONDS] * 3
-    messages = [r.getMessage() for r in caplog.records if "Live alerts are off" in r.getMessage()]
+    lines = capsys.readouterr().out.splitlines()
+    messages = [line for line in lines if "Live alerts are off" in line]
     assert len(messages) == 1
     assert "recreate the container" in messages[0]
