@@ -47,8 +47,9 @@ known issues, and the gates for alert promotion.
 - One live alert cycle: `python -m app.alerts.live_alert_worker --once`
 - Deliver the outbox manually: `python -m app.alerts.process_alert_outbox`
   (use `--dry-run` or `--test-channel` first; both leave the outbox
-  unchanged). On `main` this does not check `LIVE_ALERTS_ENABLED`, so a
-  manual run with `SLACK_WEBHOOK_URL` set sends to the live channel.
+  unchanged). A plain run refuses to send unless `LIVE_ALERTS_ENABLED=true`;
+  the gate lives in `process_alert_outbox()` so the live worker shares it.
+  Keep it there.
 - Stop live alerts: set `LIVE_ALERTS_ENABLED=false`, run
   `docker compose --profile alerts stop alert-worker`, and recreate
   `shadow-runner`.
