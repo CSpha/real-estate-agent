@@ -1,7 +1,9 @@
 """Slack incoming-webhook delivery with explicit failure classification."""
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -25,6 +27,25 @@ WEBHOOK_ERROR_CODES = {
     "channel_is_archived",
     "posting_to_general_channel_denied",
 }
+
+
+# requests puts the full URL in connection-error text, and a Slack webhook URL
+# is a secret, so error text is scrubbed before it is stored, logged, or posted.
+MAX_ERROR_DETAIL_LENGTH = 300
+_URL_PATTERN = re.compile(r"https?://\S+")
+_URL_PATH_PATTERN = re.compile(r"(?:url:\s*)?/services/\S*|url:\s*/\S*")
+
+
+def redact_url_text(text: str, url: str | None = None) -> str:
+    """Remove a URL, its path, and any URL- or /services/-style path from text."""
+    if url:
+        text = text.replace(url, "<url>")
+        path = urlsplit(url).path
+        if len(path) > 1:
+            text = text.replace(path, "<path>")
+    text = _URL_PATTERN.sub("<url>", text)
+    text = _URL_PATH_PATTERN.sub("<path>", text)
+    return " ".join(text.split())[:MAX_ERROR_DETAIL_LENGTH]
 
 
 class SlackDeliveryError(Exception):
@@ -84,9 +105,10 @@ def send_to_slack(
     try:
         response = post(webhook_url, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
     except requests.RequestException as exc:
+        detail = redact_url_text(str(exc), webhook_url)
         raise SlackDeliveryError(
-            f"Slack request failed: {type(exc).__name__}: {exc}", retryable=True
-        ) from exc
+            f"Slack request failed: {type(exc).__name__}: {detail}", retryable=True
+        ) from None
 
     if 200 <= response.status_code < 300:
         return

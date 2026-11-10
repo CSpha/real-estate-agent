@@ -353,7 +353,7 @@ docker compose logs --tail 50 api
 ### 401 Authentication required
 
 The API only checks tokens when `API_AUTH_REQUIRED=true` is in its environment
-(see the Compose caveat in [credential rotation](credential-rotation.md#api_auth_token)).
+(Compose passes it from `.env`; see [credential rotation](credential-rotation.md#api_auth_token)).
 Then every path except `/health` needs `Authorization: Bearer <token>`.
 
 - The header is missing or misspelled, or the value does not start with
@@ -392,8 +392,8 @@ and the only one that sends listing alerts. Stopping it stops them.
    A stopped container stays stopped across Docker Desktop restarts.
 
 2. **Make it stick.** In `.env` set `LIVE_ALERTS_ENABLED=false`, so that nobody
-   starts the worker again by accident (with the flag off it refuses to start)
-   and so new RentCast listings stop being marked alert-eligible, then:
+   starts the worker again by accident (with the flag off it idles and sends
+   nothing) and so new RentCast listings stop being marked alert-eligible, then:
 
    ```powershell
    docker compose --profile shadow up -d shadow-runner
@@ -402,9 +402,9 @@ and the only one that sends listing alerts. Stopping it stops them.
    Check first that the runner is not mid-run
    ([deployment](deployment.md#updating-after-a-merged-pr)).
 
-3. **Block manual sends too.** `python -m app.alerts.process_alert_outbox` on the
-   PC sends pending alerts to the live channel whenever `SLACK_WEBHOOK_URL` is in
-   `.env`, regardless of `LIVE_ALERTS_ENABLED`. To rule that out, comment out
+3. **Block manual sends too.** With `LIVE_ALERTS_ENABLED=false`,
+   `python -m app.alerts.process_alert_outbox` on the PC refuses to send (only
+   `--dry-run` and `--test-channel` work). For extra certainty, comment out
    `SLACK_WEBHOOK_URL` in `.env`.
 
 4. **Confirm:**

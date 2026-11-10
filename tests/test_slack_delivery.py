@@ -6,7 +6,7 @@ import requests
 from app.alerts import outbox
 from app.alerts import process_alert_outbox as worker_module
 from app.alerts.send_potential_deal_alerts import format_slack_message
-from app.alerts.slack import SlackDeliveryError, send_to_slack
+from app.alerts.slack import SlackDeliveryError, redact_url_text, send_to_slack
 
 
 def response(status_code, body="", headers=None):
@@ -270,3 +270,72 @@ def test_test_channel_requires_a_test_webhook(monkeypatch):
     )
     with pytest.raises(ValueError, match="SLACK_TEST_WEBHOOK_URL"):
         worker_module.preview_alert_outbox(test_channel=True, send=MagicMock())
+
+
+FAKE_WEBHOOK = "https://hooks.slack.com/services/TFAKE/BFAKE/secretfake"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "HTTPSConnectionPool(host='hooks.slack.com', port=443): Max retries "
+        "exceeded with url: /services/TFAKE/BFAKE/secretfake (Caused by "
+        "NewConnectionError('Failed to establish a new connection'))",
+        f"Connection aborted while posting to {FAKE_WEBHOOK}",
+        f"500 Server Error: oops for url: {FAKE_WEBHOOK}",
+    ],
+)
+def test_request_failure_message_never_contains_the_webhook(text):
+    post = MagicMock(side_effect=requests.ConnectionError(text))
+
+    with pytest.raises(SlackDeliveryError) as raised:
+        send_to_slack(FAKE_WEBHOOK, {"text": "hello"}, post=post)
+
+    message = str(raised.value)
+    assert raised.value.retryable
+    assert message.startswith("Slack request failed: ConnectionError:")
+    for secret in (FAKE_WEBHOOK, "/services", "TFAKE", "BFAKE", "secretfake"):
+        assert secret not in message
+    # The original exception (and its URL text) is not chained for tracebacks.
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
+
+
+def test_redact_url_text_removes_exact_url_and_path_forms():
+    redacted = redact_url_text(
+        "bad https://example.test/hook/abc123 and /hook/abc123 and "
+        "url: /anything/secretfake",
+        "https://example.test/hook/abc123",
+    )
+
+    assert "abc123" not in redacted
+    assert "secretfake" not in redacted
+    assert "example.test" not in redacted
+
+
+def test_stored_last_error_for_connection_failure_has_no_webhook(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(
+        outbox,
+        "mark_alert_failed",
+        lambda alert, error, **kwargs: recorded.append(str(error)),
+    )
+    alert = {
+        "id": 1,
+        "alert_type": "price_drop",
+        "source_listing_id": "x",
+        "payload_json": {},
+        "attempts": 0,
+    }
+    monkeypatch.setattr(outbox, "claim_due_alerts", lambda *a, **k: [alert], raising=False)
+
+    send = lambda url, message: send_to_slack(  # noqa: E731
+        url,
+        message,
+        post=MagicMock(
+            side_effect=requests.ConnectionError(f"failed posting to {FAKE_WEBHOOK}")
+        ),
+    )
+    with pytest.raises(SlackDeliveryError) as raised:
+        send(FAKE_WEBHOOK, {"text": "hi"})
+    assert "secretfake" not in str(raised.value)

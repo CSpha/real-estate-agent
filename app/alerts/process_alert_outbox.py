@@ -38,10 +38,15 @@ def process_alert_outbox(
     limit: int = 100,
     engine: Engine | None = None,
 ) -> dict[str, int]:
-    webhook_url = require_setting(
-        get_settings().slack_webhook_url,
-        "SLACK_WEBHOOK_URL",
-    )
+    settings = get_settings()
+    # Checked here so every caller (this CLI and the live worker) is covered.
+    if not settings.live_alerts_enabled:
+        raise SystemExit(
+            "Live alerts are off: set LIVE_ALERTS_ENABLED=true to send to "
+            "#listing-alerts. Nothing was sent; use --dry-run or --test-channel "
+            "to preview."
+        )
+    webhook_url = require_setting(settings.slack_webhook_url, "SLACK_WEBHOOK_URL")
     counts = deliver_pending_alerts(
         webhook_url,
         FORMATTERS,

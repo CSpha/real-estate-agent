@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD-${POSTGRES_PASSWORD:?Set DB_PASSWORD or POSTGRES_PASSWORD in .env}}
       POSTGRES_DB: ${DB_NAME-${POSTGRES_DB:-realestate}}
     ports:
-      - "${DB_PORT-${POSTGRES_PORT:-5432}}:5432"
+      - "127.0.0.1:${DB_PORT-${POSTGRES_PORT:-5432}}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -32,6 +32,9 @@ services:
       SHADOW_INTERVAL_HOURS: ${SHADOW_INTERVAL_HOURS:-72}
       SHADOW_RETRY_HOURS: ${SHADOW_RETRY_HOURS:-6}
       API_STATEMENT_TIMEOUT_MS: ${API_STATEMENT_TIMEOUT_MS:-5000}
+      API_AUTH_REQUIRED: ${API_AUTH_REQUIRED:-false}
+      API_AUTH_TOKEN: ${API_AUTH_TOKEN:-}
+      API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-120}
     command:
       - sh
       - -c
