@@ -16,7 +16,7 @@ Related: [deployment](deployment.md), [incident response](incident-response.md).
 | `SLACK_OPS_WEBHOOK_URL` | `shadow-runner`, `alert-worker` | `python -m app.ops.notify --test` | `shadow-runner`, `alert-worker` |
 | `RENTCAST_API_KEY` | `shadow-runner` | `audit_rentcast`, `sync_rentcast_shadow`, `providers.sync`, `sync_rent_estimates` | `shadow-runner` |
 | `SHADOW_HEARTBEAT_URL` | `shadow-runner` | `python -m app.ops.heartbeat --test` | `shadow-runner` |
-| `API_AUTH_TOKEN` | `api` (see the caveat below) | none | `api` |
+| `API_AUTH_TOKEN` | `api` | none | `api` |
 
 All of them live in `.env`. Compose reads `.env` when you run `docker compose`
 and passes only the variables listed in `docker-compose.yml` into each
@@ -30,7 +30,8 @@ Two rules apply to every section below:
   allows it. That keeps downtime near zero.
 
 Only list services you actually run. `docker compose --profile shadow --profile alerts --profile backup ps`
-shows them. Do not start `alert-worker` while `LIVE_ALERTS_ENABLED=false`.
+shows them. With `LIVE_ALERTS_ENABLED=false`, `alert-worker` stays up but idle
+and sends nothing; there is no reason to start it.
 
 ## Generate a random value
 
@@ -119,9 +120,8 @@ while `shadow-runner` is mid-run (see [deployment](deployment.md#updating-after-
   it at a quiet time.
 - Backups (`data/backups/*.dump`) do not contain role passwords, so old dumps
   restore fine under the new password.
-- The database port is published on all of the PC's network interfaces
-  (`5432:5432`, not `127.0.0.1`), so this password is the only barrier on your
-  network. Keep it long.
+- The database port is published on `127.0.0.1` only, so it is not reachable
+  from other machines on your network. Keep the password long anyway.
 
 ### If it goes wrong
 
@@ -281,12 +281,12 @@ yet.
   `Authorization: Bearer <token>`. `/health` is exempt. There is one token and
   no overlap period, so clients using the old token get HTTP 401 the moment the
   API restarts.
-- **Caveat:** `docker-compose.yml` does not pass `API_AUTH_REQUIRED`,
-  `API_AUTH_TOKEN` or `API_RATE_LIMIT_PER_MINUTE` to the `api` service, and `.env`
-  is not baked into the image. As shipped, the containerised API does not
-  enforce a token, and changing this variable there has no effect. Run the
-  check below before relying on it.
-- Rotate (once the variables reach the API process):
+- **Compose:** `docker-compose.yml` passes `API_AUTH_REQUIRED` (default
+  `false`), `API_AUTH_TOKEN` (default empty) and `API_RATE_LIMIT_PER_MINUTE`
+  (default `120`) from `.env` to the `api` service. `.env` is not baked into the
+  image, so after changing them recreate the container (`up -d api`, not
+  `restart`). Run the check below to confirm.
+- Rotate:
   1. Generate a token (see the generator above).
   2. Set `API_AUTH_TOKEN=<new-token>` in `.env` (and `API_AUTH_REQUIRED=true`).
   3. Recreate the API:
@@ -334,6 +334,7 @@ yet.
    whether to rewrite history. If it reached a public repository, assume it was
    copied.
 5. If you rotate the database password because of a leak, note that port 5432 is
-   reachable from the local network; check who could have connected.
+   published on `127.0.0.1` only (older Compose files published it on all
+   interfaces); check who could have connected if you ran one of those.
 6. Add a line to your post-incident notes (see
    [incident response](incident-response.md#after-an-incident)).

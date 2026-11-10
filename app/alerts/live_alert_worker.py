@@ -107,14 +107,38 @@ def interval_minutes() -> int:
     return value
 
 
+LIVE_ALERTS_OFF_MESSAGE = (
+    "Live alerts are off: set LIVE_ALERTS_ENABLED=true to send to #listing-alerts."
+)
+IDLE_SLEEP_SECONDS = 3600
+
+
 def require_live_alerts() -> None:
     settings = get_settings()
     if not settings.live_alerts_enabled:
-        raise SystemExit(
-            "Live alerts are off: set LIVE_ALERTS_ENABLED=true to send to "
-            "#listing-alerts."
-        )
+        raise SystemExit(LIVE_ALERTS_OFF_MESSAGE)
     require_setting(settings.slack_webhook_url, "SLACK_WEBHOOK_URL")
+
+
+def idle_while_disabled(
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    max_idles: int | None = None,
+) -> None:
+    """Idle instead of exiting so `restart: unless-stopped` does not loop.
+
+    The environment cannot change without recreating the container, so this
+    never needs to re-check; it just stays up until the container is stopped.
+    """
+    with log_context(component="alert_worker"):
+        log.warning(
+            "%s Idling; set LIVE_ALERTS_ENABLED=true and recreate the container.",
+            LIVE_ALERTS_OFF_MESSAGE,
+        )
+    idles = 0
+    while max_idles is None or idles < max_idles:
+        idles += 1
+        sleep(IDLE_SLEEP_SECONDS)
 
 
 def run_forever(
@@ -166,6 +190,9 @@ def main() -> None:
         help="Run one queue-and-deliver cycle, then exit.",
     )
     args = parser.parse_args()
+    if not args.once and not get_settings().live_alerts_enabled:
+        idle_while_disabled()
+        return
     require_live_alerts()
     if args.once:
         result = run_live_alert_cycle()

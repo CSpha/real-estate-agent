@@ -67,8 +67,9 @@ Profiled services start only when you name the profile (or the service).
    | `BACKUP_OFFSITE_DIR` | `backup` | Host folder for an off-machine copy. Use forward slashes. |
 
    `API_AUTH_REQUIRED`, `API_AUTH_TOKEN` and `API_RATE_LIMIT_PER_MINUTE` are in
-   `.env.example`, but `docker-compose.yml` does not currently pass them to the
-   `api` container. See [credential rotation](credential-rotation.md#api_auth_token).
+   `.env.example` and are passed to the `api` container (auth off and 120
+   requests per minute unless you set them). See
+   [credential rotation](credential-rotation.md#api_auth_token).
 
 5. Check that Compose accepts the file. `--quiet` prints nothing on success.
    Do not run `docker compose config` without `--quiet` and paste the output:
@@ -192,8 +193,9 @@ Profiled services start only when you name the profile (or the service).
    docker compose --profile alerts up -d --build alert-worker   # only if live alerts are on
    ```
 
-   Do not start `alert-worker` while `LIVE_ALERTS_ENABLED` is `false`; it exits
-   at startup and Docker keeps restarting it.
+   With `LIVE_ALERTS_ENABLED=false`, `alert-worker` logs that live alerts are
+   off and idles without sending; set the flag to `true` and recreate it to
+   start sending.
 
 3. Before recreating `shadow-runner`, check that it is not mid-run. A recreated
    container kills a run in progress, and that run is retried six hours after
@@ -252,8 +254,8 @@ For an emergency, use the fast path in
 [incident response](incident-response.md#stop-all-alerts-now). The routine
 version:
 
-1. Stop the worker first. With the flag `false`, the worker exits at startup,
-   and `restart: unless-stopped` would then restart it in a loop.
+1. Stop the worker first. A running worker keeps the old flag value until it is
+   stopped or recreated, so it would keep sending.
 
    ```powershell
    docker compose --profile alerts stop alert-worker

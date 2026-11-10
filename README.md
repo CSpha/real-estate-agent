@@ -31,7 +31,8 @@ The app also accepts the Docker-style names `POSTGRES_HOST`, `POSTGRES_PORT`,
 `DB_*` takes precedence when both conventions are set. `DATABASE_URL` overrides
 the central Python engine's connection URL. Docker Compose accepts either
 variable convention for database credentials, database name, and published port;
-containers connect to the internal `postgres:5432` address. Compose does not
+the port is published on `127.0.0.1` only, and containers connect to the internal
+`postgres:5432` address. Compose does not
 derive its service configuration from `DATABASE_URL`.
 
 For Slack alerts, add:
@@ -221,7 +222,9 @@ A failed ping is logged and does not fail the run.
 ### Live alerts
 
 Live alerts to `#listing-alerts` are off unless `LIVE_ALERTS_ENABLED=true` is set
-in `.env`. Then:
+in `.env`. With the flag off, `alert-worker` stays running but idle and sends
+nothing, and a plain `python -m app.alerts.process_alert_outbox` refuses to send.
+Then:
 
 - The shadow sync marks RentCast listings alert-eligible. The shadow runner
   still never queues or sends alerts and has no listing-alert webhook.
@@ -372,7 +375,8 @@ python -m app.alerts.process_alert_outbox
 
 `--dry-run` prints the formatted messages for due alerts. `--test-channel` sends
 them to `SLACK_TEST_WEBHOOK_URL` only. Neither mode reads the production webhook
-or changes the outbox, so previewed alerts stay pending for real delivery.
+or changes the outbox, so previewed alerts stay pending for real delivery. Both
+work with live alerts off; the plain command needs `LIVE_ALERTS_ENABLED=true`.
 
 Messages use Slack Block Kit (headline, address linked to a Zillow search, key
 prices, and listing ID) with a plain-text fallback for notifications. When more
@@ -586,8 +590,9 @@ Before exposing the API outside the local machine, set `API_AUTH_REQUIRED=true`
 and a long random `API_AUTH_TOKEN`. Requests then require
 `Authorization: Bearer <token>`; `/health` remains available to a monitoring
 system. `API_RATE_LIMIT_PER_MINUTE` caps requests per process and client IP,
-with a default of 120. API request logs are structured JSON and omit tokens and
-query strings.
+with a default of 120. Compose passes all three from `.env` to the `api`
+container; recreate it (`docker compose up -d api`) after changing them. API
+request logs are structured JSON and omit tokens and query strings.
 List endpoints (`/listings`, `/alerts`, `/saved-searches`, saved-search
 evaluations, analyses, reviews, `/score`) take `limit` (default 50, max 200;
 analyses max 100) and `offset`; invalid values return 422. Bodies stay plain
