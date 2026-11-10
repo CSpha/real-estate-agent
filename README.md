@@ -379,6 +379,16 @@ prices, and listing ID) with a plain-text fallback for notifications. When more
 than three alerts are due at once, the worker sends digests of up to ten alerts,
 one line each; every alert in a digest shares its delivery outcome.
 
+Each alert also shows the estimated monthly cost at the latest stored 30-year
+PMMS rate (with its as-of date): conventional with 10% down (including PMI) and
+20% down, and a DSCR loan with 20% down at PMMS plus 1.00 point. Taxes are
+assumed at 1.50% of price and insurance at 0.50% per year. When a RentCast rent
+estimate is stored, the alert shows the DSCR (rent divided by the DSCR-loan
+payment), and it always shows the rent needed for 1.25 coverage. Digest lines
+carry the 20%-down cost and the DSCR. The figures are computed when the alert
+is queued and stored in its outbox payload; without a stored PMMS rate the
+section is left out. They are estimates, not lender quotes.
+
 To see real shadow events in the alert format without queueing anything, send
 them to the test channel (it refuses to run if the test webhook equals the
 production webhook, and never writes to the database):

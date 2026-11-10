@@ -2,8 +2,12 @@ import json
 
 from sqlalchemy import Engine, text
 
+from app.alerts.affordability import attach_affordability
 from app.alerts.formatting import (
     address_link,
+    affordability_block,
+    affordability_brief,
+    affordability_lines,
     context_block,
     escape,
     fields_block,
@@ -107,13 +111,19 @@ def get_price_drop_events(engine: Engine | None = None):
 
 def format_slack_message(event):
     change = f"{money(event['price_change'])} ({percent(event['price_change_pct'])})"
+    affordability = affordability_block(event)
     return {
-        "text": (
-            f"Price drop: {full_address(event)}\n"
-            f"Previous price: {money(event['previous_price'])}\n"
-            f"Current price: {money(event['current_price'])}\n"
-            f"Change: {change}\n"
-            f"Listing ID: {event['source_listing_id']}"
+        "text": "\n".join(
+            [
+                (
+                    f"Price drop: {full_address(event)}\n"
+                    f"Previous price: {money(event['previous_price'])}\n"
+                    f"Current price: {money(event['current_price'])}\n"
+                    f"Change: {change}\n"
+                    f"Listing ID: {event['source_listing_id']}"
+                ),
+                *affordability_lines(event),
+            ]
         ),
         "blocks": [
             header_block(f":chart_with_downwards_trend: Price drop: {event['address']}"),
@@ -125,6 +135,7 @@ def format_slack_message(event):
                     ("Change", change),
                 ]
             ),
+            *([affordability] if affordability else []),
             context_block(f"Listing ID {escape(event['source_listing_id'])}"),
         ],
     }
@@ -136,6 +147,7 @@ def summarize_event(event):
         f"{money(event['current_price'])}, down "
         f"{money(abs(to_decimal(event['price_change']) or 0))} "
         f"({percent(event['price_change_pct'])}) from {money(event['previous_price'])}"
+        f"{affordability_brief(event)}"
     )
     return (
         f":chart_with_downwards_trend: *{address_link(event)}*  {detail}",
@@ -148,6 +160,7 @@ def enqueue_price_drop_events(engine: Engine | None = None) -> int:
     events = get_price_drop_events(engine)
     if not events:
         return 0
+    events = attach_affordability(events, "current_price", engine)
 
     insert_sql = text(
         """
@@ -190,6 +203,7 @@ def enqueue_price_drop_events(engine: Engine | None = None) -> int:
                     "current_price": str(event["current_price"]),
                     "price_change": str(event["price_change"]),
                     "price_change_pct": str(event["price_change_pct"]),
+                    "affordability": event["affordability"],
                     "event_timestamp": event["event_timestamp"].isoformat(),
                 }
             ),
