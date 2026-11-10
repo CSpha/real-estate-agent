@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 
 import app.api as api_module
 from app.api import app
-from app.dashboard.data import summarize
+from app.dashboard.data import alert_status, summarize
 
 
 def test_dashboard_serves_the_review_workspace():
@@ -11,6 +11,9 @@ def test_dashboard_serves_the_review_workspace():
     assert response.status_code == 200
     assert "Property Signal" in response.text
     assert "Scored opportunities" in response.text
+    # The alert badge is filled from /dashboard/data, not hard-coded.
+    assert 'id="alert-state"' in response.text
+    assert "Slack alerts disabled" not in response.text
 
 
 def test_dashboard_data_endpoint_uses_read_only_builder(monkeypatch):
@@ -77,3 +80,27 @@ def test_dashboard_summary_counts_review_and_score_availability():
         "positive_cash_flow_count": 1,
         "dscr_constrained_count": 0,
     }
+
+
+def test_alert_status_is_live_only_with_alert_eligible_listings():
+    live = alert_status(
+        {
+            "alert_eligible_listings": 87,
+            "last_sent_at": "2026-11-09T18:20:00+00:00",
+            "queued_count": 2,
+            "permanent_failed_count": None,
+        }
+    )
+    assert live == {
+        "live": True,
+        "alert_eligible_listings": 87,
+        "last_sent_at": "2026-11-09T18:20:00+00:00",
+        "queued_count": 2,
+        "permanent_failed_count": 0,
+    }
+
+    shadow = alert_status(
+        {"alert_eligible_listings": 0, "last_sent_at": None, "queued_count": 0}
+    )
+    assert shadow["live"] is False
+    assert shadow["last_sent_at"] is None

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Review Wayne County shadow listings, valuations, and pipeline readiness.">
+    <meta name="description" content="Review Wayne County listings, valuations, alerts, and pipeline health.">
     <title>Property Signal</title>
     <link rel="icon" type="image/svg+xml" href="/dashboard-assets/favicon.svg">
     <link rel="stylesheet" href="/dashboard-assets/dashboard.css">
@@ -14,7 +14,7 @@
         <span class="brand-mark" aria-hidden="true">PS</span>
         <div>
           <strong>Property Signal</strong>
-          <span>Wayne County shadow review</span>
+          <span>Wayne County deal review</span>
         </div>
       </div>
       <div class="live-state" id="live-state" aria-live="polite">
@@ -28,9 +28,9 @@
         <div>
           <p class="eyebrow">Operations</p>
           <h1>Deal review workspace</h1>
-          <p class="lede">Monitor shadow scoring and inspect provisional opportunities before any alert promotion.</p>
+          <p class="lede">Monitor scoring and inspect the opportunities behind the Slack alerts. Comparable sales are still provisional.</p>
         </div>
-        <p class="guardrail">Shadow mode · Slack alerts disabled</p>
+        <p class="guardrail" id="alert-state" aria-live="polite">Checking alerts</p>
       </section>
 
       <section class="metric-grid" aria-label="Pipeline status">

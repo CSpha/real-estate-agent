@@ -56,7 +56,27 @@ function populateFilters() {
   );
 }
 
+function renderAlertState(alerts) {
+  const element = document.querySelector("#alert-state");
+  if (!alerts) {
+    element.textContent = "Alert status unavailable";
+    return;
+  }
+  const parts = [];
+  if (alerts.live) {
+    parts.push("Live alerts on");
+    parts.push(alerts.last_sent_at ? `last sent ${formatDate(alerts.last_sent_at)}` : "none sent yet");
+  } else {
+    parts.push("Shadow mode · Slack alerts off");
+  }
+  if (alerts.queued_count) parts.push(`${alerts.queued_count} queued`);
+  if (alerts.permanent_failed_count) parts.push(`${alerts.permanent_failed_count} failed`);
+  element.textContent = parts.join(" · ");
+  element.className = `guardrail ${alerts.permanent_failed_count ? "error" : alerts.live ? "live" : ""}`.trim();
+}
+
 function renderSummary(data) {
+  renderAlertState(data.alerts);
   const summary = data.summary;
   document.querySelector("#listing-count").textContent = summary.listing_count;
   document.querySelector("#score-count").textContent = summary.complete_score_count;

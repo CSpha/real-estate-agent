@@ -58,6 +58,8 @@ h1, h2, p { margin-top: 0; }
 h1 { margin-bottom: 0.7rem; font-size: clamp(2rem, 4vw, 3.6rem); line-height: 1; letter-spacing: -0.055em; }
 .lede { max-width: 690px; margin-bottom: 0; color: var(--muted); font-size: 1.05rem; line-height: 1.6; }
 .guardrail { padding: 0.6rem 0.9rem; border: 1px solid rgba(246, 184, 92, 0.35); border-radius: 999px; color: var(--amber); font-size: 0.85rem; white-space: nowrap; }
+.guardrail.live { border-color: rgba(67, 212, 208, 0.4); color: var(--cyan); }
+.guardrail.error { border-color: rgba(255, 123, 114, 0.45); color: var(--danger); }
 
 .metric-grid { margin-top: 2.5rem; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; background: var(--line); }
 .metric-card { min-height: 150px; padding: 1.35rem; display: flex; flex-direction: column; justify-content: space-between; background: var(--panel); }
@@ -152,7 +154,7 @@ tbody tr:hover, tbody tr:focus-within { background: rgba(67, 212, 208, 0.055); }
   .search-field { grid-column: 1 / -1; }
   .run-list { grid-template-columns: repeat(2, 1fr); }
   .intro-row { align-items: flex-start; flex-direction: column; }
-  .guardrail { margin: 0; }
+  .guardrail { margin: 0; white-space: normal; }
 }
 
 @media (max-width: 560px) {

@@ -438,7 +438,12 @@ python -m app.transforms.apply_auditor_sqft_candidates
 
 With the API running, open `http://127.0.0.1:8000/dashboard` to use the local
 Property Signal dashboard. It shows pipeline health, shadow-promotion readiness,
-recent runs, and the current listing scores from Postgres. Listings can be
+recent runs, and the current listing scores from Postgres. The header badge
+reports alert state from the database: "Live alerts on" with the last send time
+when any current RentCast listing is alert-eligible, otherwise "Shadow mode",
+plus counts of queued and permanently failed alerts (red when any failed). It
+does not read `LIVE_ALERTS_ENABLED`, which the `api` container is not given.
+Listings can be
 searched, filtered, sorted, and opened to inspect their valuation evidence and
 score components. The dashboard is read-only and clearly marks the data as
 provisional; it does not enable alerts or change listing records.

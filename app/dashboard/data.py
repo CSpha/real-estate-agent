@@ -111,6 +111,36 @@ COMPONENTS_SQL = text(
     """
 )
 
+# Live-alert state comes from the database rather than LIVE_ALERTS_ENABLED,
+# because the API container is not given that setting and the worker may be
+# stopped even when it is on. Listings become alert-eligible only when the
+# shadow sync runs with live alerts enabled.
+ALERT_STATUS_SQL = text(
+    """
+    SELECT
+        (SELECT COUNT(*) FROM listings_current
+          WHERE source = :source AND alert_eligible
+            AND missing_from_feed_since IS NULL) AS alert_eligible_listings,
+        (SELECT MAX(sent_at) FROM alert_outbox WHERE status = 'sent') AS last_sent_at,
+        (SELECT COUNT(*) FROM alert_outbox
+          WHERE status IN ('pending', 'processing', 'retryable_failed')) AS queued_count,
+        (SELECT COUNT(*) FROM alert_outbox
+          WHERE status = 'permanent_failed') AS permanent_failed_count
+    """
+)
+
+
+def alert_status(row: dict[str, Any]) -> dict[str, Any]:
+    eligible = int(row.get("alert_eligible_listings") or 0)
+    return {
+        "live": eligible > 0,
+        "alert_eligible_listings": eligible,
+        "last_sent_at": row.get("last_sent_at"),
+        "queued_count": int(row.get("queued_count") or 0),
+        "permanent_failed_count": int(row.get("permanent_failed_count") or 0),
+    }
+
+
 RUNS_SQL = text(
     """
     SELECT id, status, started_at, finished_at, listing_count,
@@ -205,6 +235,9 @@ def build_dashboard_data(
             _row_dict(row)
             for row in connection.execute(RUNS_SQL, {"source": source}).mappings()
         ]
+        alerts = alert_status(
+            _row_dict(connection.execute(ALERT_STATUS_SQL, {"source": source}).mappings().one())
+        )
 
     for listing in listings:
         listing["components"] = components.get(listing["valuation_id"], [])
@@ -216,6 +249,7 @@ def build_dashboard_data(
         "provisional": True,
         "summary": summarize(listings),
         "readiness": asdict(assess_shadow_readiness(source=source, engine=engine)),
+        "alerts": alerts,
         "runs": runs,
         "listings": listings,
         "listings_truncated": truncated,
