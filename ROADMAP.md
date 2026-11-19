@@ -18,14 +18,18 @@ Build a reliable application that retrieves authorized real-estate listings, sto
 | Operations | Health with freshness and backlog, opt-in API auth and rate limiting, daily backups with restore verification, CI, deployment and incident runbooks |
 | Alert promotion | **Live since November 8** via the `alert-worker` (`LIVE_ALERTS_ENABLED=true`); flagged listings excluded from deal alerts; transaction validity still outstanding |
 
-Latest schema revision: `0022_rental_assumption_policies`.
+Latest schema revision: `0023_listing_coordinates`.
 
 ## Current capabilities
 
 Data and ingestion
 
-- One authoritative Alembic-managed PostgreSQL schema (22 revisions)
+- One authoritative Alembic-managed PostgreSQL schema (23 revisions)
 - Immutable raw JSON payloads with content hashes and normalized current listings
+  (for RentCast, the stored payload is the adapter's normalized record, not the
+  provider response; see known issue 8)
+- Listing latitude/longitude from RentCast on `listings_current` (revision
+  `0023`) with an idempotent backfill from stored payloads
 - Idempotent sample ingestion and change-aware listing history
 - RentCast active-sale-listing adapter with bounded pagination, secret-header
   authentication, bounded retries (timeouts, 429 with `Retry-After`, 5xx),
@@ -68,7 +72,8 @@ Scoring and analysis
 
 Searches, alerts, and API
 
-- Versioned saved searches with validated, explainable criteria evaluation
+- Versioned saved searches with validated, explainable criteria evaluation,
+  including an optional latitude/longitude bounding box
 - Stable listing/search event fingerprints and persisted match transitions
 - PostgreSQL alert outbox with atomic claims, retries, and visible permanent failures
 - Slack alerts for price drops and potential deals, both delivered through the
@@ -138,6 +143,13 @@ Operations
    `API_AUTH_TOKEN`, and `API_RATE_LIMIT_PER_MINUTE`; manual
    `process_alert_outbox` sends refuse unless `LIVE_ALERTS_ENABLED=true`; and a
    disabled `alert-worker` idles instead of restart-looping.
+8. **RentCast `listings_raw` payloads are not the provider response.** The sync
+   stores the adapter's normalized record, so fields the adapter drops (until
+   November 19, latitude and longitude) cannot be recovered from history. The
+   coordinate backfill therefore finds nothing in pre-`0023` payloads; the next
+   shadow sync fills active listings. Listings already missing from the feed
+   keep NULL coordinates until they return. Storing the full provider response
+   would change payload hashing and is not yet scheduled.
 
 ## Alert promotion gates
 
@@ -189,7 +201,8 @@ Passing `python -m app.shadow.readiness` alone does not satisfy them.
    parcel/dwelling rule is documented.
 8. Keep the computer awake or accept wake-time delays; shadow runs, backups,
    and ops warnings pause while it sleeps.
-9. Add geographic bounding-box criteria once provider coordinates are available.
+9. Done November 19: listing coordinates and saved-search bounding boxes
+   (revision `0023`).
 
 ## Design principles
 
@@ -221,8 +234,8 @@ one shared pure evaluator, structured match/failure reasons, immediate/digest
 mode with cooldown, stable event fingerprints, CRUD and evaluation endpoints,
 and a pipeline step. Integration validation passed on September 8, 2026.
 
-- [ ] Add optional geographic bounding-box criteria after provider coordinates
-      are available.
+- [x] Add optional geographic bounding-box criteria after provider coordinates
+      are available (November 19, revision `0023`).
 
 Example criteria:
 
@@ -255,7 +268,8 @@ unless their terms and an explicit agreement authorize it.
 
 - [x] Provider interface (`fetch_updated_since`, `normalize`) with RentCast and fixture adapters
 - [x] Bounded pagination with request timeouts
-- [x] Store raw payloads before normalization
+- [x] Store raw payloads before normalization (RentCast stores the adapter's
+      normalized record; see known issue 8)
 - [x] Track provider listing ID and source
 - [x] Quarantine bad individual records (`ingest_errors`, auditor importer)
 - [x] Record shadow sync runs with start/end time, counts, and failure details (`shadow_pipeline_runs`)

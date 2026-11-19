@@ -35,7 +35,7 @@ REQUIRED_COLUMNS = [
     "price_per_sqft",
 ]
 
-OPTIONAL_COLUMNS = ["lot_size_acres"]
+OPTIONAL_COLUMNS = ["lot_size_acres", "latitude", "longitude"]
 
 RAW_INSERT_SQL = text(
     """
@@ -95,6 +95,8 @@ CURRENT_UPSERT_SQL = text(
         first_seen_date,
         last_seen_date,
         price_per_sqft,
+        latitude,
+        longitude,
         alert_eligible,
         scoring_eligible
     )
@@ -116,6 +118,8 @@ CURRENT_UPSERT_SQL = text(
         :first_seen_date,
         :last_seen_date,
         :price_per_sqft,
+        :latitude,
+        :longitude,
         :alert_eligible,
         :scoring_eligible
     )
@@ -142,6 +146,8 @@ CURRENT_UPSERT_SQL = text(
             EXCLUDED.last_seen_date
         ),
         price_per_sqft = EXCLUDED.price_per_sqft,
+        latitude = EXCLUDED.latitude,
+        longitude = EXCLUDED.longitude,
         alert_eligible = EXCLUDED.alert_eligible,
         scoring_eligible = EXCLUDED.scoring_eligible,
         updated_at = CURRENT_TIMESTAMP
@@ -161,6 +167,8 @@ CURRENT_UPSERT_SQL = text(
         listings_current.first_seen_date,
         listings_current.last_seen_date,
         listings_current.price_per_sqft,
+        listings_current.latitude,
+        listings_current.longitude,
         listings_current.alert_eligible,
         listings_current.scoring_eligible
     ) IS DISTINCT FROM ROW(
@@ -179,6 +187,8 @@ CURRENT_UPSERT_SQL = text(
         LEAST(listings_current.first_seen_date, EXCLUDED.first_seen_date),
         GREATEST(listings_current.last_seen_date, EXCLUDED.last_seen_date),
         EXCLUDED.price_per_sqft,
+        EXCLUDED.latitude,
+        EXCLUDED.longitude,
         EXCLUDED.alert_eligible,
         EXCLUDED.scoring_eligible
     )
@@ -205,6 +215,8 @@ SQLITE_CURRENT_UPSERT_SQL = text(
         first_seen_date,
         last_seen_date,
         price_per_sqft,
+        latitude,
+        longitude,
         alert_eligible,
         scoring_eligible
     )
@@ -226,6 +238,8 @@ SQLITE_CURRENT_UPSERT_SQL = text(
         :first_seen_date,
         :last_seen_date,
         :price_per_sqft,
+        :latitude,
+        :longitude,
         :alert_eligible,
         :scoring_eligible
     )
@@ -246,6 +260,8 @@ SQLITE_CURRENT_UPSERT_SQL = text(
         first_seen_date = EXCLUDED.first_seen_date,
         last_seen_date = EXCLUDED.last_seen_date,
         price_per_sqft = EXCLUDED.price_per_sqft,
+        latitude = EXCLUDED.latitude,
+        longitude = EXCLUDED.longitude,
         alert_eligible = EXCLUDED.alert_eligible,
         scoring_eligible = EXCLUDED.scoring_eligible,
         updated_at = CURRENT_TIMESTAMP
@@ -270,6 +286,8 @@ EXISTING_CURRENT_SELECT_SQL = text(
         first_seen_date,
         last_seen_date,
         price_per_sqft,
+        latitude,
+        longitude,
         alert_eligible,
         scoring_eligible
     FROM listings_current
@@ -294,6 +312,8 @@ TRACKED_CURRENT_FIELDS = (
     "first_seen_date",
     "last_seen_date",
     "price_per_sqft",
+    "latitude",
+    "longitude",
     "alert_eligible",
     "scoring_eligible",
 )

@@ -91,6 +91,8 @@ class ProviderSyncTests(unittest.TestCase):
                         first_seen_date TEXT,
                         last_seen_date TEXT,
                         price_per_sqft REAL,
+                        latitude REAL,
+                        longitude REAL,
                         alert_eligible BOOLEAN NOT NULL DEFAULT TRUE,
                         scoring_eligible BOOLEAN NOT NULL DEFAULT TRUE,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from math import isnan
 from typing import Any
 
@@ -130,6 +130,39 @@ def normalize_boolean(value: Any) -> bool | None:
     raise ValueError(f"Expected a boolean value, got: {value!r}")
 
 
+COORDINATE_PLACES = Decimal("0.000001")
+
+
+def normalize_coordinates(
+    latitude: Any,
+    longitude: Any,
+) -> tuple[Decimal | None, Decimal | None]:
+    """Return a (latitude, longitude) pair rounded to six places, or (None, None).
+
+    Coordinates are optional, so an unusable pair is dropped rather than
+    quarantining the listing: a missing half, a non-number, an out-of-range
+    value, or the (0, 0) placeholder some feeds use for "unknown".
+    """
+    lat = _coordinate(latitude, 90)
+    lon = _coordinate(longitude, 180)
+    if lat is None or lon is None or (lat == 0 and lon == 0):
+        return None, None
+    return lat, lon
+
+
+def _coordinate(value: Any, limit: int) -> Decimal | None:
+    value = none_if_missing(value)
+    if value is None or isinstance(value, bool) or value == "":
+        return None
+    try:
+        result = Decimal(str(value).strip())
+    except InvalidOperation:
+        return None
+    if not result.is_finite() or not -limit <= result <= limit:
+        return None
+    return result.quantize(COORDINATE_PLACES)
+
+
 def normalize_listing(record: dict[str, Any]) -> dict[str, Any]:
     source = str(record.get("source", "")).strip()
     source_listing_id = str(record.get("source_listing_id", "")).strip()
@@ -138,6 +171,9 @@ def normalize_listing(record: dict[str, Any]) -> dict[str, Any]:
     if not source_listing_id:
         raise ValueError("Listing source_listing_id cannot be empty")
 
+    latitude, longitude = normalize_coordinates(
+        record.get("latitude"), record.get("longitude")
+    )
     return {
         "source": source,
         "source_listing_id": source_listing_id,
@@ -156,6 +192,8 @@ def normalize_listing(record: dict[str, Any]) -> dict[str, Any]:
         "first_seen_date": normalize_date(record.get("first_seen_date")),
         "last_seen_date": normalize_date(record.get("last_seen_date")),
         "price_per_sqft": normalize_number(record.get("price_per_sqft")),
+        "latitude": latitude,
+        "longitude": longitude,
     }
 
 

@@ -121,6 +121,8 @@ LISTING_CANDIDATES_SQL = text(
         location.county_name,
         listing.state,
         listing.zip,
+        listing.latitude,
+        listing.longitude,
         listing.list_price,
         previous.previous_price,
         listing.beds,

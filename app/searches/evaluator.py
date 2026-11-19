@@ -22,6 +22,9 @@ def evaluate_listing(
     if criteria.locations:
         _evaluate_locations(criteria, listing, passed, failed)
 
+    if criteria.bounding_box is not None:
+        _evaluate_bounding_box(criteria, listing, passed, failed)
+
     for criterion_name, label, bounds, value in (
         ("price", "price", criteria.price, listing.list_price),
         ("beds", "beds", criteria.beds, listing.beds),
@@ -166,6 +169,47 @@ def _evaluate_locations(
                 actual,
                 expected,
                 "Listing is outside the allowed locations.",
+            )
+        )
+
+
+def _evaluate_bounding_box(
+    criteria: SearchCriteria,
+    listing: ListingCandidate,
+    passed: list[EvaluationReason],
+    failed: list[EvaluationReason],
+) -> None:
+    box = criteria.bounding_box
+    if box is None:
+        return
+    expected = box.model_dump(mode="json")
+    if listing.latitude is None or listing.longitude is None:
+        failed.append(
+            _reason(
+                "bounding_box",
+                None,
+                expected,
+                "Listing coordinates are missing.",
+            )
+        )
+        return
+    actual = {"latitude": listing.latitude, "longitude": listing.longitude}
+    if box.contains(listing.latitude, listing.longitude):
+        passed.append(
+            _reason(
+                "bounding_box",
+                actual,
+                expected,
+                "Listing is inside the bounding box.",
+            )
+        )
+    else:
+        failed.append(
+            _reason(
+                "bounding_box",
+                actual,
+                expected,
+                "Listing is outside the bounding box.",
             )
         )
 
