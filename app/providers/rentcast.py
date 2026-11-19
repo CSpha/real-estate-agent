@@ -233,6 +233,8 @@ class RentCastProvider:
             "first_seen_date": raw_listing.get("listedDate"),
             "last_seen_date": raw_listing.get("lastSeenDate"),
             "price_per_sqft": price / sqft if price and sqft else None,
+            "latitude": raw_listing.get("latitude"),
+            "longitude": raw_listing.get("longitude"),
         }
 
 

@@ -1,8 +1,10 @@
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
 from app.normalization import (
+    normalize_coordinates,
     normalize_listing,
     normalize_property_type,
     normalize_status,
@@ -75,6 +77,39 @@ def test_normalize_listing_produces_canonical_values():
     assert listing["status"] == "Active"
     assert listing["lot_size_acres"] == 0.25
     assert listing["first_seen_date"] == date(2026, 4, 23)
+
+
+def test_normalize_listing_rounds_coordinates_to_six_places():
+    listing = normalize_listing(
+        {
+            "source": "rentcast",
+            "source_listing_id": "1001",
+            "latitude": 40.79860149,
+            "longitude": "-81.9375",
+        }
+    )
+
+    assert listing["latitude"] == Decimal("40.798601")
+    assert listing["longitude"] == Decimal("-81.937500")
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude"),
+    [
+        (None, None),
+        (40.8, None),
+        (None, -81.9),
+        (91, -81.9),
+        (40.8, -181),
+        (0, 0),
+        ("not a number", -81.9),
+        (True, -81.9),
+        (float("nan"), -81.9),
+        ("Infinity", -81.9),
+    ],
+)
+def test_normalize_coordinates_drops_unusable_pairs(latitude, longitude):
+    assert normalize_coordinates(latitude, longitude) == (None, None)
 
 
 def test_normalize_listing_requires_stable_identifiers():

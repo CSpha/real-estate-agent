@@ -98,8 +98,35 @@ class DealScoreCriteria(StrictModel):
     min: int = Field(ge=0, le=100)
 
 
+class BoundingBoxCriteria(StrictModel):
+    """Inclusive latitude/longitude box. Boxes crossing the antimeridian are not supported."""
+
+    min_latitude: Decimal = Field(ge=-90, le=90)
+    max_latitude: Decimal = Field(ge=-90, le=90)
+    min_longitude: Decimal = Field(ge=-180, le=180)
+    max_longitude: Decimal = Field(ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> BoundingBoxCriteria:
+        if self.min_latitude > self.max_latitude:
+            raise ValueError("min_latitude cannot be greater than max_latitude")
+        if self.min_longitude > self.max_longitude:
+            raise ValueError(
+                "min_longitude cannot be greater than max_longitude "
+                "(boxes crossing the antimeridian are not supported)"
+            )
+        return self
+
+    def contains(self, latitude: Decimal, longitude: Decimal) -> bool:
+        return (
+            self.min_latitude <= latitude <= self.max_latitude
+            and self.min_longitude <= longitude <= self.max_longitude
+        )
+
+
 class SearchCriteria(StrictModel):
     locations: list[LocationCriteria] = Field(default_factory=list)
+    bounding_box: BoundingBoxCriteria | None = None
     price: NumericRange | None = None
     beds: NumericRange | None = None
     baths: NumericRange | None = None
@@ -144,6 +171,7 @@ class SearchCriteria(StrictModel):
         if not any(
             (
                 self.locations,
+                self.bounding_box is not None,
                 self.price is not None,
                 self.beds is not None,
                 self.baths is not None,
@@ -168,6 +196,8 @@ class ListingCandidate(StrictModel):
     county_name: str | None = None
     state: str | None = None
     zip: str | None = None
+    latitude: Decimal | None = None
+    longitude: Decimal | None = None
     list_price: Decimal | None = None
     previous_price: Decimal | None = None
     beds: Decimal | None = None

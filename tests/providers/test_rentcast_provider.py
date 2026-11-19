@@ -90,6 +90,8 @@ def _listing(**overrides):
         "listedDate": "2026-07-01T00:00:00.000Z",
         "lastSeenDate": "2026-08-06T12:00:00.000Z",
         "daysOnMarket": 36,
+        "latitude": 40.798601,
+        "longitude": -81.937502,
         "mlsName": "MLS Now",
         "mlsNumber": "510001",
         "history": {"2026-07-01": {"price": 300000}},
@@ -154,6 +156,8 @@ def test_rentcast_provider_normalizes_listing_fields():
         "first_seen_date": "2026-07-01T00:00:00.000Z",
         "last_seen_date": "2026-08-06T12:00:00.000Z",
         "price_per_sqft": Decimal("150"),
+        "latitude": 40.798601,
+        "longitude": -81.937502,
     }
 
 

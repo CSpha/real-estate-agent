@@ -21,6 +21,8 @@ def candidate(**overrides) -> ListingCandidate:
         "county_name": "Wayne",
         "state": "OH",
         "zip": "44691",
+        "latitude": Decimal("40.798600"),
+        "longitude": Decimal("-81.937500"),
         "list_price": Decimal("150000"),
         "previous_price": Decimal("160000"),
         "beds": Decimal("3"),
@@ -35,6 +37,14 @@ def candidate(**overrides) -> ListingCandidate:
     }
     values.update(overrides)
     return ListingCandidate.model_validate(values)
+
+
+WOOSTER_BOX = {
+    "min_latitude": 40.75,
+    "max_latitude": 40.85,
+    "min_longitude": -82.0,
+    "max_longitude": -81.9,
+}
 
 
 def test_search_requires_at_least_one_criterion():
@@ -80,6 +90,7 @@ def test_all_supported_criteria_match_at_inclusive_boundaries():
         max_days_on_market=20,
         price_drop={"min_amount": 10000, "min_percent": 6.25},
         deal_score={"min": 80},
+        bounding_box=WOOSTER_BOX | {"min_latitude": 40.7986},
     )
 
     result = evaluate_listing(criteria, candidate())
@@ -88,6 +99,7 @@ def test_all_supported_criteria_match_at_inclusive_boundaries():
     assert result.failed_reasons == []
     assert {reason.criterion for reason in result.match_reasons} == {
         "locations",
+        "bounding_box",
         "price",
         "beds",
         "baths",
@@ -150,3 +162,65 @@ def test_saved_search_patch_rejects_empty_or_null_required_fields():
 
     with pytest.raises(ValidationError, match="criteria cannot be null"):
         SavedSearchUpdate.model_validate({"criteria": None})
+
+
+def test_bounding_box_alone_is_a_valid_search():
+    criteria = SearchCriteria(bounding_box=WOOSTER_BOX)
+
+    result = evaluate_listing(criteria, candidate())
+
+    assert result.is_match is True
+    assert result.match_reasons[0].criterion == "bounding_box"
+    assert result.match_reasons[0].actual == {
+        "latitude": Decimal("40.798600"),
+        "longitude": Decimal("-81.937500"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude"),
+    [("40.86", "-81.95"), ("40.80", "-81.89"), ("40.74", "-82.01")],
+)
+def test_bounding_box_rejects_listings_outside(latitude, longitude):
+    criteria = SearchCriteria(bounding_box=WOOSTER_BOX)
+
+    result = evaluate_listing(
+        criteria,
+        candidate(latitude=Decimal(latitude), longitude=Decimal(longitude)),
+    )
+
+    assert result.is_match is False
+    assert result.failed_reasons[0].message == "Listing is outside the bounding box."
+
+
+def test_bounding_box_fails_listings_without_coordinates():
+    criteria = SearchCriteria(bounding_box=WOOSTER_BOX, price={"max": 200000})
+
+    result = evaluate_listing(criteria, candidate(latitude=None, longitude=None))
+
+    assert result.is_match is False
+    assert [reason.criterion for reason in result.failed_reasons] == ["bounding_box"]
+    assert result.failed_reasons[0].message == "Listing coordinates are missing."
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"min_latitude": 40.9}, "min_latitude cannot be greater"),
+        ({"min_longitude": -81.8}, "antimeridian"),
+        ({"max_latitude": 91}, "less than or equal to 90"),
+        ({"min_longitude": -181}, "greater than or equal to -180"),
+    ],
+)
+def test_bounding_box_validates_bounds(overrides, message):
+    with pytest.raises(ValidationError, match=message):
+        SearchCriteria(bounding_box=WOOSTER_BOX | overrides)
+
+
+def test_bounding_box_requires_all_four_edges_and_no_extras():
+    with pytest.raises(ValidationError, match="max_longitude"):
+        SearchCriteria(
+            bounding_box={k: v for k, v in WOOSTER_BOX.items() if k != "max_longitude"}
+        )
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        SearchCriteria(bounding_box=WOOSTER_BOX | {"radius_miles": 5})

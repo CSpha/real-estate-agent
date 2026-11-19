@@ -150,6 +150,44 @@ page commits. A failed or interrupted sync resumes from that cursor if it is
 retried within six hours; older state starts over because offset cursors drift
 as listings change. Repeated cursors and more than 100 pages stop the sync.
 
+RentCast `latitude`/`longitude` are stored on `listings_current` (revision
+`0023`), rounded to six decimal places. Coordinates are optional: a missing
+half, an out-of-range value, or the `0,0` placeholder is stored as NULL rather
+than quarantining the listing. They are not part of `listing_history`, so
+filling them in creates no snapshots and cannot produce a price-drop event.
+Sample CSVs may include optional `latitude` and `longitude` columns.
+
+To fill coordinates for existing listings from stored `listings_raw` payloads
+(no provider requests):
+
+```powershell
+python -m app.transforms.backfill_listing_coordinates --dry-run
+python -m app.transforms.backfill_listing_coordinates
+```
+
+The backfill only touches listings without coordinates, uses each listing's
+newest payload with a usable pair, and is idempotent. Payloads stored before
+`0023` hold the normalized listing, which never included coordinates, so for
+those listings it reports them as still missing; the next scheduled shadow
+sync fills every active listing without extra RentCast requests.
+
+Saved searches accept an optional inclusive bounding box, alone or with other
+criteria. Listings without coordinates fail it with "Listing coordinates are
+missing." Boxes that cross the antimeridian are rejected. Saved-search matches
+are recorded in `listing_search_evaluations` and do not send Slack alerts.
+
+```json
+{
+  "bounding_box": {
+    "min_latitude": 40.75,
+    "max_latitude": 40.85,
+    "min_longitude": -82.0,
+    "max_longitude": -81.9
+  },
+  "price": {"max": 175000}
+}
+```
+
 Import the most recent 24 months of property-level Wayne County sales and run
 the all-listing review:
 
